@@ -45,6 +45,11 @@ final class CaptureSession {
     /// 取り込みの状態（画面表示用）
     var captureStatus = "停止"
     var targetLanguageIdentifier = "ja"
+    // 字幕の表示設定
+    var showOriginal = true
+    /// 話している途中の原文（確定前）も PiP に出すか
+    var showLiveOriginal = false
+    var fontScale = 1.0
     var volatileText = ""
     var segments: [TranscriptSegment] = []
     var logs: [String] = []
@@ -73,6 +78,47 @@ final class CaptureSession {
     /// 開始処理の多重実行を防ぐ（isRunning は開始完了後に立つため別に持つ）
     private var isStarting = false
 
+    /// 保存対象の設定。変更の検知（onChange）に使う。
+    struct SettingsSnapshot: Equatable {
+        var locale: String
+        var target: String
+        var source: CaptureSource
+        var showOriginal: Bool
+        var showLiveOriginal: Bool
+        var fontScale: Double
+    }
+
+    var settingsSnapshot: SettingsSnapshot {
+        SettingsSnapshot(locale: localeIdentifier, target: targetLanguageIdentifier, source: captureSource,
+                         showOriginal: showOriginal, showLiveOriginal: showLiveOriginal, fontScale: fontScale)
+    }
+
+    init() {
+        let d = UserDefaults.standard
+        if let v = d.string(forKey: "locale") { localeIdentifier = v }
+        if let v = d.string(forKey: "target") { targetLanguageIdentifier = v }
+        if let raw = d.string(forKey: "captureSource"), let v = CaptureSource(rawValue: raw),
+           CaptureSource.available.contains(v) { captureSource = v }
+        if d.object(forKey: "showOriginal") != nil { showOriginal = d.bool(forKey: "showOriginal") }
+        showLiveOriginal = d.bool(forKey: "showLiveOriginal")
+        if d.object(forKey: "fontScale") != nil { fontScale = d.double(forKey: "fontScale") }
+    }
+
+    func saveSettings() {
+        let d = UserDefaults.standard
+        d.set(localeIdentifier, forKey: "locale")
+        d.set(targetLanguageIdentifier, forKey: "target")
+        d.set(captureSource.rawValue, forKey: "captureSource")
+        d.set(showOriginal, forKey: "showOriginal")
+        d.set(showLiveOriginal, forKey: "showLiveOriginal")
+        d.set(fontScale, forKey: "fontScale")
+    }
+
+    /// 表示設定を PiP の字幕へ反映する。
+    func applySubtitleStyle() {
+        pip.apply(style: SubtitleStyle(showOriginal: showOriginal, fontScale: CGFloat(fontScale)))
+    }
+
     private var sourceLanguage: Locale.Language {
         Locale(identifier: localeIdentifier).language
     }
@@ -93,6 +139,15 @@ final class CaptureSession {
             await prepareTranslation()
 
             engine.onLog = { [weak self] msg in Task { @MainActor in self?.log(msg) } }
+            engine.onFailure = { [weak self] error in
+                Task { @MainActor in
+                    guard let self, self.isRunning else { return }
+                    self.captureStatus = "文字起こしが停止しました"
+                    self.log("文字起こしが続行できないため停止します: \(error.localizedDescription)")
+                    await self.stop()
+                    self.captureStatus = "文字起こしが停止しました"
+                }
+            }
             engine.onResult = { [weak self] text, isFinal in
                 Task { @MainActor in self?.handleResult(text, isFinal: isFinal) }
             }
@@ -167,6 +222,14 @@ final class CaptureSession {
                 self?.log(msg)
             }
         }
+        sckSource.onStopped = { [weak self] error in
+            Task { @MainActor in
+                guard let self, self.isRunning else { return }
+                self.log("ScreenCaptureKit のストリームが停止しました: \(error.localizedDescription)")
+                await self.stop()
+                self.captureStatus = "共有が停止しました（開始し直してください）"
+            }
+        }
         captureStatus = "共有対象の選択待ち"
         log("共有ピッカーを開きます。画面全体の共有を開始してください")
         try await sckSource.start()
@@ -237,22 +300,34 @@ final class CaptureSession {
     }
 
     /// 最新の確定文節（原文と日本語訳）を PiP の字幕へ反映する。
+    /// showLiveOriginal が有効なら、確定前の原文を原文欄に出す。
     private func updatePiP() {
-        guard let last = segments.last else { return }
-        pip.show(original: last.text, translation: last.translation ?? "翻訳中…")
+        let last = segments.last
+        let original = (showLiveOriginal && !volatileText.isEmpty) ? volatileText : (last?.text ?? "")
+        let translation = last.map { $0.translation ?? "翻訳中…" } ?? ""
+        guard !original.isEmpty || !translation.isEmpty else { return }
+        pip.show(original: original, translation: translation)
     }
+
+    /// 履歴の保持件数。長時間の利用でメモリが増え続けないようにする。
+    private static let maxSegments = 300
 
     private func handleResult(_ text: String, isFinal: Bool) {
         if isFinal {
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty {
                 segments.append(TranscriptSegment(text: trimmed))
+                if segments.count > Self.maxSegments {
+                    segments.removeFirst(segments.count - Self.maxSegments)
+                }
+                volatileText = ""
                 updatePiP()
                 Task { await flushTranslations() }
             }
             volatileText = ""
         } else {
             volatileText = text
+            if showLiveOriginal { updatePiP() }
         }
     }
 

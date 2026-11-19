@@ -7,6 +7,7 @@ final class KeepAlive {
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
     private(set) var isRunning = false
+    private var interruptionObserver: NSObjectProtocol?
 
     func start() throws {
         guard !isRunning else { return }
@@ -23,10 +24,23 @@ final class KeepAlive {
         player.scheduleBuffer(silence, at: nil, options: .loops)
         player.play()
         isRunning = true
+
+        // 電話などの割り込みが終わったら、無音再生を再開して実行維持を回復する
+        interruptionObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
+            guard let self,
+                  let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  AVAudioSession.InterruptionType(rawValue: raw) == .ended else { return }
+            try? AVAudioSession.sharedInstance().setActive(true)
+            if !self.engine.isRunning { try? self.engine.start() }
+            self.player.play()
+        }
     }
 
     func stop() {
         guard isRunning else { return }
+        if let interruptionObserver { NotificationCenter.default.removeObserver(interruptionObserver) }
+        interruptionObserver = nil
         player.stop()
         engine.stop()
         engine.detach(player)

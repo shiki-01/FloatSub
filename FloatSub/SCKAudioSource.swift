@@ -12,8 +12,10 @@ import ScreenCaptureKit
 final class SCKAudioSource: NSObject, SCStreamOutput, SCStreamDelegate, SCContentSharingPickerObserver, @unchecked Sendable {
     /// 受信した音声（SCK のキューから呼ばれる）
     var onBuffer: ((AVAudioPCMBuffer) -> Void)?
-    /// 状態通知（ストリーム停止など）
+    /// 状態通知
     var onEvent: ((String) -> Void)?
+    /// システム側の都合でストリームが停止したとき（利用者が共有を止めた場合など）
+    var onStopped: ((Error) -> Void)?
 
     enum SourceError: LocalizedError {
         case pickerUnavailable
@@ -128,7 +130,7 @@ final class SCKAudioSource: NSObject, SCStreamOutput, SCStreamDelegate, SCConten
     // MARK: SCStreamDelegate
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
-        onEvent?("ScreenCaptureKit のストリームが停止しました: \(error.localizedDescription)")
+        onStopped?(error)
     }
 }
 #endif

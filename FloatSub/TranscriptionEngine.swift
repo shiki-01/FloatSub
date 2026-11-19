@@ -14,6 +14,8 @@ final class TranscriptionEngine {
     /// 途中結果（volatile）。確定すると isFinal = true で届く
     var onResult: ((String, Bool) -> Void)?
     var onLog: ((String) -> Void)?
+    /// 結果の受信が異常終了したとき（文字起こしが続行できない）
+    var onFailure: ((Error) -> Void)?
 
     private var analyzer: SpeechAnalyzer?
     private var continuation: AsyncStream<AnalyzerInput>.Continuation?
@@ -58,6 +60,7 @@ final class TranscriptionEngine {
                 }
             } catch {
                 self?.onLog?("文字起こしエラー: \(error.localizedDescription)")
+                self?.onFailure?(error)
             }
         }
         try await analyzer.start(inputSequence: stream)

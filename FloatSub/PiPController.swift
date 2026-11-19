@@ -24,6 +24,7 @@ final class PiPController: NSObject {
     private var lastPixelBuffer: CVPixelBuffer?
     private var currentOriginal = ""
     private var currentTranslation = "字幕を待っています"
+    private var style = SubtitleStyle()
 
     override init() {
         super.init()
@@ -97,8 +98,16 @@ final class PiPController: NSObject {
         render()
     }
 
+    /// 表示設定を変更し、現在の字幕を描き直す。
+    func apply(style newStyle: SubtitleStyle) {
+        guard newStyle != style else { return }
+        style = newStyle
+        render()
+    }
+
     private func render() {
-        guard let pixelBuffer = SubtitleRenderer.makePixelBuffer(original: currentOriginal, translation: currentTranslation) else { return }
+        guard let pixelBuffer = SubtitleRenderer.makePixelBuffer(
+            original: currentOriginal, translation: currentTranslation, style: style) else { return }
         lastPixelBuffer = pixelBuffer
         enqueue(pixelBuffer)
     }

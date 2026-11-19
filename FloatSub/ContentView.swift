@@ -4,94 +4,177 @@ import Translation
 
 struct ContentView: View {
     @State private var session = CaptureSession()
+    @State private var options = LanguageOptions()
     @State private var probeReport = ""
-
-    private var startTitle: String {
-        session.captureSource == .replayKit ? "1. 受信と文字起こしを開始" : "開始（共有対象を選択）"
-    }
 
     var body: some View {
         NavigationStack {
             List {
-                Section("操作") {
-                    Picker("原語", selection: $session.localeIdentifier) {
-                        Text("English (US)").tag("en-US")
-                        Text("English (UK)").tag("en-GB")
-                    }
-                    .disabled(session.isRunning)
-                    Picker("取り込み方式", selection: $session.captureSource) {
-                        ForEach(CaptureSource.available) { Text($0.title).tag($0) }
-                    }
-                    .disabled(session.isRunning)
-                    Button(session.isRunning ? "停止" : startTitle) {
-                        Task { session.isRunning ? await session.stop() : await session.start() }
-                    }
-                    if session.captureSource == .replayKit {
-                        BroadcastStartButton()
-                            .disabled(!session.isRunning)
-                    } else if !session.isRunning {
-                        Text("開始すると共有ピッカーが開きます。画面全体の共有を開始し、YouTube などで音声を再生してください。")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Section("字幕 PiP") {
-                    PiPLayerView(controller: session.pip)
-                        .aspectRatio(SubtitleRenderer.size.width / SubtitleRenderer.size.height, contentMode: .fit)
-                        .listRowInsets(EdgeInsets())
-                    LabeledContent("状態", value: session.pip.status)
-                    Button(session.pip.isActive ? "PiP を終了" : "PiP を開始") {
-                        session.pip.isActive ? session.pip.stop() : session.pip.start()
-                    }
-                    .disabled(!session.pip.isPossible && !session.pip.isActive)
-                }
-
-                Section("取り込み診断") {
-                    LabeledContent("取り込み状態", value: session.captureStatus)
-                    if session.captureSource == .replayKit {
-                        LabeledContent("拡張の接続", value: session.extensionConnected ? "接続中" : "未接続")
-                    }
-                    LabeledContent("受信バッファ数", value: "\(session.receivedBuffers)")
-                    LabeledContent("サンプルレート", value: String(format: "%.0f Hz", session.receivedSampleRate))
-                    ProgressView(value: min(Double(session.level) * 8, 1)) { Text("音声レベル (RMS)") }
-                }
-
-                Section("文字起こしと日本語訳") {
-                    LabeledContent("翻訳", value: session.translationStatus)
-                    ForEach(session.segments) { segment in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(segment.text).foregroundStyle(.secondary)
-                            Text(segment.translation ?? "（翻訳待ち）")
-                                .font(.headline)
-                        }
-                    }
-                    if !session.volatileText.isEmpty {
-                        Text(session.volatileText).foregroundStyle(.secondary)
-                    }
-                }
-
-                #if SCK_PROBE && canImport(ScreenCaptureKit)
-                Section("ScreenCaptureKit 検証") {
-                    Button("ピッカーを開き 30 秒間の音声取得を試行") {
-                        Task { probeReport = await SCKProbe().run() }
-                    }
-                    if !probeReport.isEmpty { Text(probeReport).font(.caption.monospaced()) }
-                }
-                #endif
-
-                Section("ログ") {
-                    ForEach(Array(session.logs.enumerated()), id: \.offset) {
-                        Text($0.element).font(.caption.monospaced())
-                    }
-                }
+                controlSection
+                languageSection
+                subtitleSection
+                pipSection
+                transcriptSection
+                detailSection
             }
             .navigationTitle("FloatSub")
-            .onAppear { session.pip.prepare() }
+            .onAppear {
+                session.pip.prepare()
+                session.applySubtitleStyle()
+            }
+            .task {
+                await options.loadTargets()
+                await options.loadSources(target: session.targetLanguageIdentifier)
+                fixSelection()
+            }
+            // 設定の保存と、字幕の見た目の反映
+            .onChange(of: session.settingsSnapshot) {
+                session.saveSettings()
+                session.applySubtitleStyle()
+            }
+            // 翻訳先を変えたら、翻訳できる原語だけに絞り直す
+            .onChange(of: session.targetLanguageIdentifier) {
+                Task {
+                    await options.loadSources(target: session.targetLanguageIdentifier)
+                    fixSelection()
+                }
+            }
             // 言語モデルが未導入のとき、システムのダウンロード確認を出すために必要
             .translationTask(session.translationConfiguration) { translationSession in
                 await session.handleDownload(translationSession)
             }
+        }
+    }
+
+    // MARK: - セクション
+
+    private var controlSection: some View {
+        Section {
+            Button {
+                Task { session.isRunning ? await session.stop() : await session.start() }
+            } label: {
+                Label(session.isRunning ? "停止" : "開始",
+                      systemImage: session.isRunning ? "stop.circle.fill" : "play.circle.fill")
+                    .font(.headline)
+            }
+            .tint(session.isRunning ? .red : .accentColor)
+            LabeledContent("状態", value: session.captureStatus)
+            LabeledContent("翻訳", value: session.translationStatus)
+            if session.captureSource == .replayKit, session.isRunning {
+                BroadcastStartButton()
+            }
+            if !session.isRunning {
+                Text(startHint)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var startHint: String {
+        switch session.captureSource {
+        case .screenCaptureKit:
+            "開始すると共有ピッカーが開きます。画面全体の共有を開始し、YouTube などで音声を再生してください。字幕は PiP の小窓に表示されます。"
+        case .replayKit:
+            "開始後に「画面収録（音声取り込み）」を押し、FloatSub Broadcast を選んでください。"
+        }
+    }
+
+    private var languageSection: some View {
+        Section("言語") {
+            Picker("原語", selection: $session.localeIdentifier) {
+                ForEach(options.sources) { Text($0.name).tag($0.id) }
+            }
+            Picker("翻訳先", selection: $session.targetLanguageIdentifier) {
+                ForEach(options.targets) { Text($0.name).tag($0.id) }
+            }
+        }
+        .disabled(session.isRunning)
+    }
+
+    private var subtitleSection: some View {
+        Section("字幕の表示") {
+            Toggle("原文を表示", isOn: $session.showOriginal)
+            Toggle("話している途中の原文も表示", isOn: $session.showLiveOriginal)
+                .disabled(!session.showOriginal)
+            Picker("文字サイズ", selection: $session.fontScale) {
+                Text("小").tag(0.8)
+                Text("標準").tag(1.0)
+                Text("大").tag(1.2)
+                Text("特大").tag(1.4)
+            }
+            .pickerStyle(.segmented)
+        }
+    }
+
+    private var pipSection: some View {
+        Section {
+            PiPLayerView(controller: session.pip)
+                .aspectRatio(SubtitleRenderer.size.width / SubtitleRenderer.size.height, contentMode: .fit)
+                .listRowInsets(EdgeInsets())
+            LabeledContent("状態", value: session.pip.status)
+            Button(session.pip.isActive ? "PiP を終了" : "PiP を開始") {
+                session.pip.isActive ? session.pip.stop() : session.pip.start()
+            }
+            .disabled(!session.pip.isPossible && !session.pip.isActive)
+        } header: {
+            Text("字幕 PiP")
+        } footer: {
+            Text("iOS の PiP は同時に 1 つだけです。YouTube など他アプリの PiP が開いている間は、字幕の PiP を表示できません。")
+        }
+    }
+
+    private var transcriptSection: some View {
+        Section("文字起こしと日本語訳") {
+            if !session.volatileText.isEmpty {
+                Text(session.volatileText).foregroundStyle(.secondary)
+            }
+            // 新しい順に表示する
+            ForEach(session.segments.reversed()) { segment in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(segment.text).foregroundStyle(.secondary)
+                    Text(segment.translation ?? "（翻訳待ち）")
+                        .font(.headline)
+                }
+            }
+        }
+    }
+
+    private var detailSection: some View {
+        Section {
+            DisclosureGroup("詳細（取り込み方式・診断・ログ）") {
+                Picker("取り込み方式", selection: $session.captureSource) {
+                    ForEach(CaptureSource.available) { Text($0.title).tag($0) }
+                }
+                .disabled(session.isRunning)
+                if session.captureSource == .replayKit {
+                    LabeledContent("拡張の接続", value: session.extensionConnected ? "接続中" : "未接続")
+                }
+                LabeledContent("受信バッファ数", value: "\(session.receivedBuffers)")
+                LabeledContent("サンプルレート", value: String(format: "%.0f Hz", session.receivedSampleRate))
+                ProgressView(value: min(Double(session.level) * 8, 1)) { Text("音声レベル (RMS)") }
+
+                #if SCK_PROBE && canImport(ScreenCaptureKit)
+                Button("ScreenCaptureKit 検証（30 秒）") {
+                    Task { probeReport = await SCKProbe().run() }
+                }
+                if !probeReport.isEmpty { Text(probeReport).font(.caption.monospaced()) }
+                #endif
+
+                ForEach(Array(session.logs.enumerated()), id: \.offset) {
+                    Text($0.element).font(.caption.monospaced())
+                }
+            }
+        }
+    }
+
+    /// 選択中の言語が候補にないとき、先頭の候補へ切り替える。
+    private func fixSelection() {
+        if !options.sources.contains(where: { $0.id == session.localeIdentifier }), let first = options.sources.first {
+            session.localeIdentifier = first.id
+        }
+        if !options.targets.contains(where: { $0.id == session.targetLanguageIdentifier }), let first = options.targets.first {
+            session.targetLanguageIdentifier = first.id
         }
     }
 }
@@ -104,7 +187,7 @@ struct BroadcastStartButton: View {
     var body: some View {
         ZStack {
             BroadcastPicker(trigger: trigger).frame(width: 1, height: 1).opacity(0.01)
-            Button("2. 画面収録（音声取り込み）を開始") { trigger += 1 }
+            Button("画面収録（音声取り込み）を開始") { trigger += 1 }
         }
     }
 }
