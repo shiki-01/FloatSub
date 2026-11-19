@@ -35,7 +35,7 @@ struct ContentView: View {
                     }
                 }
 
-                #if SCK_PROBE
+                #if SCK_PROBE && canImport(ScreenCaptureKit)
                 Section("ScreenCaptureKit 検証") {
                     Button("10 秒間の音声取得を試行") {
                         Task { probeReport = await SCKProbe().run() }

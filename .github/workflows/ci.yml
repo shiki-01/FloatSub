@@ -29,6 +29,16 @@ jobs:
           ls /Applications | grep -i xcode || true
           xcodebuild -version
           xcodebuild -showsdks | grep -i ios
+      - name: ScreenCaptureKit の SDK 提供状況
+        run: |
+          # iOS SDK で import ScreenCaptureKit が通るかを直接確認する
+          echo 'import ScreenCaptureKit' > /tmp/sck_check.swift
+          if xcrun --sdk iphoneos swiftc -typecheck -target arm64-apple-ios26.0 /tmp/sck_check.swift; then
+            echo "RESULT: ScreenCaptureKit は iOS SDK で import 可能"
+          else
+            echo "RESULT: ScreenCaptureKit は iOS SDK で import 不可"
+          fi
+          ls "$(xcrun --sdk iphoneos --show-sdk-path)/System/Library/Frameworks" | grep -i ScreenCapture || echo "SDK 内に ScreenCaptureKit.framework なし"
       - name: XcodeGen
         run: brew install xcodegen && xcodegen generate
       - name: Build（署名なし）
