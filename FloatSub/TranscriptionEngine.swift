@@ -12,6 +12,16 @@ struct TranscriptSegment: Identifiable {
     /// 音声の時間軸（取り込んだ音声の累積秒）での位置
     var audioStart = 0.0
     var audioEnd = 0.0
+    /// 翻訳を試みた回数。失敗した文節は未翻訳のまま保持し、上限まで再試行する
+    var translationAttempts = 0
+    /// 次に再試行してよい時刻（systemUptime）
+    var retryAt: TimeInterval = 0
+
+    /// 再試行の上限に達し、翻訳をあきらめた状態
+    var isTranslationAbandoned: Bool {
+        translation == nil && translationAttempts >= TranscriptSegment.maxTranslationAttempts
+    }
+    static let maxTranslationAttempts = 5
 }
 
 /// 文字起こしの 1 結果。途中結果（volatile）と確定結果の両方に使う。

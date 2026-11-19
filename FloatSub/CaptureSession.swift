@@ -99,7 +99,11 @@ final class CaptureSession {
     private let translator = TranslationEngine()
     /// 字幕の PiP 表示
     let pip = PiPController()
-    private var isTranslating = false
+    /// 翻訳処理が動いている間の開始時刻（systemUptime）。nil なら停止中
+    private var flushingSince: TimeInterval?
+    /// 翻訳処理を作り直すたびに進め、古い処理を打ち切る
+    private var flushGeneration = 0
+    private var watchdogTask: Task<Void, Never>?
     // 途中結果の処理
     private var chunker = UtteranceChunker()
     private var volatileFull = ""
@@ -242,6 +246,7 @@ final class CaptureSession {
                 try startMicrophone(handler)
             }
             isRunning = true
+            startWatchdog()
         } catch {
             log("開始に失敗: \(error.localizedDescription)")
             await stop()
@@ -296,6 +301,10 @@ final class CaptureSession {
         keepAlive.stop()
         translator.reset()
         cancelPartialWork()
+        watchdogTask?.cancel()
+        watchdogTask = nil
+        flushGeneration += 1
+        flushingSince = nil
         pip.stop()
         translationConfiguration = nil
         translationStatus = "未準備"
@@ -384,31 +393,108 @@ final class CaptureSession {
         await flushTranslations()
     }
 
-    /// 未翻訳の確定文節を古い順に 1 件ずつ翻訳する。多重起動は isTranslating で防ぐ。
+    /// 未翻訳の文節の件数（再試行待ちを含み、あきらめたものを除く）。診断表示用。
+    var pendingTranslationCount: Int {
+        segments.filter { $0.translation == nil && !$0.isTranslationAbandoned }.count
+    }
+
+    /// 再試行をあきらめた文節の件数。診断表示用。
+    var abandonedTranslationCount: Int {
+        segments.filter { $0.isTranslationAbandoned }.count
+    }
+
+    /// 翻訳が止まっているとみなす時間。これを超えて翻訳が返らないときは、セッションを作り直して再開する
+    private static let translationHangLimit = 20.0
+    /// 滞留の確認間隔
+    private static let watchdogInterval = Duration.seconds(5)
+
+    /// 未翻訳の確定文節を古い順に翻訳する。失敗した文節は未翻訳のまま残し、間隔を空けて上限回数まで再試行する。
+    /// 多重起動は flushingSince で防ぐ。長く返らない翻訳があれば、世代を進めて作り直す。
     private func flushTranslations() async {
-        guard !isTranslating, translator.isReady else { return }
-        isTranslating = true
-        defer { isTranslating = false }
-        while let index = segments.firstIndex(where: { $0.translation == nil }) {
+        guard translator.isReady else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        if let started = flushingSince {
+            guard now - started >= Self.translationHangLimit else { return }
+            log("翻訳が \(Int(now - started)) 秒返らないため、翻訳をやり直します")
+            flushGeneration += 1
+            flushingSince = nil
+            await prepareTranslation()
+            guard translator.isReady else { return }
+        }
+        let generation = flushGeneration
+        flushingSince = ProcessInfo.processInfo.systemUptime
+        defer { if generation == flushGeneration { flushingSince = nil } }
+        while generation == flushGeneration, translator.isReady {
+            let current = ProcessInfo.processInfo.systemUptime
+            let candidates = segments.indices.filter { segments[$0].translation == nil && !segments[$0].isTranslationAbandoned }
+            guard !candidates.isEmpty else { return }
+            // 再試行の間隔が空いていない文節しか残っていないときは、最短の待ち時間だけ待つ
+            guard let index = candidates.first(where: { segments[$0].retryAt <= current }) else {
+                let wait = (candidates.map { segments[$0].retryAt }.min() ?? current) - current
+                try? await Task.sleep(for: .seconds(max(0.2, wait)))
+                continue
+            }
             let id = segments[index].id
             let text = segments[index].text
             let audioEnd = segments[index].audioEnd
             do {
                 let began = ProcessInfo.processInfo.systemUptime
-                let translated = try await translator.translate(text, urgent: true)
+                let translated = try await translate(text, urgent: true)
+                guard generation == flushGeneration else { return }
                 if let i = segments.firstIndex(where: { $0.id == id }) {
                     segments[i].translation = translated
                 }
                 updatePiP()
                 recordCaptionLatency(audioEnd: audioEnd, translationBegan: began)
             } catch {
-                log("翻訳に失敗: \(error.localizedDescription)")
-                // 失敗した文節は空訳にして無限ループを避ける
+                guard generation == flushGeneration else { return }
                 if let i = segments.firstIndex(where: { $0.id == id }) {
-                    segments[i].translation = "（翻訳失敗）"
+                    segments[i].translationAttempts += 1
+                    let attempts = segments[i].translationAttempts
+                    // 失敗のたびに待ち時間を延ばす（2 秒、4 秒、…最大 10 秒）
+                    segments[i].retryAt = ProcessInfo.processInfo.systemUptime + min(Double(attempts) * 2, 10)
+                    if segments[i].isTranslationAbandoned {
+                        log("翻訳を断念しました（\(attempts) 回失敗）: \(error.localizedDescription)")
+                        updatePiP()
+                    } else {
+                        log("翻訳に失敗（\(attempts)/\(TranscriptSegment.maxTranslationAttempts) 回）。あとで再試行します: \(error.localizedDescription)")
+                    }
                 }
             }
         }
+    }
+
+    /// 翻訳結果に用語の置換をかけて返す。
+    private func translate(_ text: String, urgent: Bool) async throws -> String {
+        try await translator.translate(text, urgent: urgent)
+    }
+
+    /// 未翻訳の文節が滞留していないかを定期的に確認し、止まっていれば翻訳を再開する。
+    private func startWatchdog() {
+        watchdogTask?.cancel()
+        watchdogTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: Self.watchdogInterval)
+                guard !Task.isCancelled, let self else { return }
+                await self.resumeTranslations(resetAbandoned: false)
+            }
+        }
+    }
+
+    /// 未翻訳の文節があれば翻訳を再開する。前面へ戻ったときは、あきらめた文節にも再試行の機会を与える。
+    func resumeTranslations(resetAbandoned: Bool = true) async {
+        guard isRunning || !segments.isEmpty else { return }
+        if resetAbandoned {
+            for i in segments.indices where segments[i].isTranslationAbandoned {
+                segments[i].translationAttempts = 0
+                segments[i].retryAt = 0
+            }
+        }
+        // 翻訳の準備が失われている場合（モデル導入後など）は準備し直す
+        if !translator.isReady, translationConfiguration == nil { await prepareTranslation() }
+        guard pendingTranslationCount > 0 else { return }
+        if resetAbandoned { log("未翻訳 \(pendingTranslationCount) 件の翻訳を再開します") }
+        await flushTranslations()
     }
 
     /// 字幕として出す内容を決めて、PiP とアプリ内表示へ反映する。
@@ -433,6 +519,8 @@ final class CaptureSession {
                     // 確定訳が届くまで、直前の暫定訳を薄く出し続ける
                     translation = p
                     isProvisional = true
+                } else if last.isTranslationAbandoned {
+                    translation = "（翻訳できません）"
                 } else {
                     translation = "翻訳中…"
                 }
@@ -563,7 +651,7 @@ final class CaptureSession {
             let captured = volatileCaptured
             let began = ProcessInfo.processInfo.systemUptime
             do {
-                let translated = try await translator.translate(text)
+                let translated = try await translate(text, urgent: false)
                 // 待っている間に区切りや確定があった場合、この訳は古いので捨てる
                 if generation == provisionalGeneration {
                     provisionalSource = text

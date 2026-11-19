@@ -10,6 +10,7 @@ struct ContentView: View {
     @State private var shareItem: ShareItem?
     @State private var confirmClear = false
     @State private var exportError = ""
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         NavigationStack {
@@ -34,6 +35,10 @@ struct ContentView: View {
                 await options.loadTargets()
                 await options.loadSources(target: session.targetLanguageIdentifier)
                 fixSelection()
+            }
+            // 前面へ戻ったとき、背面や高負荷で滞留した翻訳を再開する
+            .onChange(of: scenePhase) {
+                if scenePhase == .active { Task { await session.resumeTranslations() } }
             }
             // 設定の保存と、字幕の見た目の反映
             .onChange(of: session.settingsSnapshot) {
@@ -230,7 +235,8 @@ struct ContentView: View {
             ForEach(session.segments.reversed()) { segment in
                 VStack(alignment: .leading, spacing: 4) {
                     Text(segment.text).foregroundStyle(.secondary)
-                    Text(segment.translation ?? segment.provisionalTranslation ?? "（翻訳待ち）")
+                    Text(segment.translation ?? segment.provisionalTranslation
+                         ?? (segment.isTranslationAbandoned ? "（翻訳できません）" : "（翻訳待ち）"))
                         .font(.headline)
                         .opacity(segment.translation == nil ? 0.5 : 1)
                 }
@@ -243,6 +249,10 @@ struct ContentView: View {
             DisclosureGroup("詳細（取り込み方式・診断・ログ）") {
                 if session.captureSource == .replayKit {
                     LabeledContent("拡張の接続", value: session.extensionConnected ? "接続中" : "未接続")
+                }
+                LabeledContent("未翻訳の滞留", value: "\(session.pendingTranslationCount) 件")
+                if session.abandonedTranslationCount > 0 {
+                    LabeledContent("翻訳をあきらめた文節", value: "\(session.abandonedTranslationCount) 件")
                 }
                 LabeledContent("受信バッファ数", value: "\(session.receivedBuffers)")
                 LabeledContent("サンプルレート", value: String(format: "%.0f Hz", session.receivedSampleRate))
