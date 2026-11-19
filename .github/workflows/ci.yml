@@ -1,0 +1,42 @@
+name: CI
+
+# 署名なしのコンパイル確認。Secrets 不要。
+on:
+  push:
+  workflow_dispatch:
+
+env:
+  BUNDLE_ID_PREFIX: ${{ vars.BUNDLE_ID_PREFIX || 'com.example' }}
+  DEVELOPMENT_TEAM: ${{ vars.DEVELOPMENT_TEAM || 'XXXXXXXXXX' }}
+
+jobs:
+  compile:
+    runs-on: macos-26
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: main
+            conditions: ''
+          # ScreenCaptureKit が iOS 27 SDK でコンパイル可能かの確認（実行可否は実機で確認する）
+          - name: sck-probe
+            conditions: 'SCK_PROBE'
+    name: compile (${{ matrix.name }})
+    steps:
+      - uses: actions/checkout@v4
+      - name: 環境情報
+        run: |
+          ls /Applications | grep -i xcode || true
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i ios
+      - name: XcodeGen
+        run: brew install xcodegen && xcodegen generate
+      - name: Build（署名なし）
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project FloatSub.xcodeproj -scheme FloatSub \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) ${{ matrix.conditions }}' \
+            | tee build.log | tail -n 80

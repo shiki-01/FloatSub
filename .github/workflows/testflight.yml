@@ -1,0 +1,83 @@
+name: TestFlight
+
+# 署名済みビルドを作成し、App Store Connect（TestFlight）へアップロードする。手動実行。
+on:
+  workflow_dispatch:
+    inputs:
+      sck_probe:
+        description: ScreenCaptureKit 検証ボタンを含める
+        type: boolean
+        default: true
+
+env:
+  BUNDLE_ID_PREFIX: ${{ vars.BUNDLE_ID_PREFIX }}
+  DEVELOPMENT_TEAM: ${{ vars.DEVELOPMENT_TEAM }}
+
+jobs:
+  testflight:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: 必須設定の確認
+        run: |
+          for v in BUNDLE_ID_PREFIX DEVELOPMENT_TEAM; do
+            [ -n "${!v}" ] || { echo "Repository variable $v が未設定です"; exit 1; }
+          done
+          for s in ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8; do
+            [ -n "${!s}" ] || { echo "Secret $s が未設定です"; exit 1; }
+          done
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+      - name: XcodeGen
+        run: brew install xcodegen && xcodegen generate
+      - name: API キーを配置
+        run: |
+          mkdir -p "$RUNNER_TEMP/keys"
+          printf '%s' "$ASC_KEY_P8" > "$RUNNER_TEMP/keys/AuthKey_${ASC_KEY_ID}.p8"
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+      - name: Archive
+        run: |
+          set -o pipefail
+          CONDITIONS='$(inherited)'
+          [ "${{ inputs.sck_probe }}" = "true" ] && CONDITIONS="$CONDITIONS SCK_PROBE"
+          xcodebuild archive \
+            -project FloatSub.xcodeproj -scheme FloatSub \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/FloatSub.xcarchive" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/keys/AuthKey_${ASC_KEY_ID}.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
+            SWIFT_ACTIVE_COMPILATION_CONDITIONS="$CONDITIONS" \
+            | tail -n 60
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      - name: Export と TestFlight へのアップロード
+        run: |
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>upload</string>
+            <key>teamID</key><string>${DEVELOPMENT_TEAM}</string>
+            <key>signingStyle</key><string>automatic</string>
+          </dict></plist>
+          EOF
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/FloatSub.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/keys/AuthKey_${ASC_KEY_ID}.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" | tail -n 40
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}

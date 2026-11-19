@@ -1,0 +1,89 @@
+import SwiftUI
+import ReplayKit
+
+struct ContentView: View {
+    @State private var session = CaptureSession()
+    @State private var probeReport = ""
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("操作") {
+                    Picker("原語", selection: $session.localeIdentifier) {
+                        Text("English (US)").tag("en-US")
+                        Text("English (UK)").tag("en-GB")
+                    }
+                    .disabled(session.isRunning)
+                    Button(session.isRunning ? "停止" : "1. 受信と文字起こしを開始") {
+                        Task { session.isRunning ? await session.stop() : await session.start() }
+                    }
+                    BroadcastStartButton()
+                        .disabled(!session.isRunning)
+                }
+
+                Section("取り込み診断") {
+                    LabeledContent("拡張の接続", value: session.extensionConnected ? "接続中" : "未接続")
+                    LabeledContent("受信バッファ数", value: "\(session.receivedBuffers)")
+                    LabeledContent("サンプルレート", value: String(format: "%.0f Hz", session.receivedSampleRate))
+                    ProgressView(value: min(Double(session.level) * 8, 1)) { Text("音声レベル (RMS)") }
+                }
+
+                Section("文字起こし") {
+                    ForEach(session.segments) { Text($0.text) }
+                    if !session.volatileText.isEmpty {
+                        Text(session.volatileText).foregroundStyle(.secondary)
+                    }
+                }
+
+                #if SCK_PROBE
+                Section("ScreenCaptureKit 検証") {
+                    Button("10 秒間の音声取得を試行") {
+                        Task { probeReport = await SCKProbe().run() }
+                    }
+                    if !probeReport.isEmpty { Text(probeReport).font(.caption.monospaced()) }
+                }
+                #endif
+
+                Section("ログ") {
+                    ForEach(Array(session.logs.enumerated()), id: \.offset) {
+                        Text($0.element).font(.caption.monospaced())
+                    }
+                }
+            }
+            .navigationTitle("FloatSub")
+        }
+    }
+}
+
+/// RPSystemBroadcastPickerView を SwiftUI のボタンから起動する。
+/// 標準のピッカーは小さなアイコンのため、内部の UIButton を押下して拡張選択シートを開く。
+struct BroadcastStartButton: View {
+    @State private var trigger = 0
+
+    var body: some View {
+        ZStack {
+            BroadcastPicker(trigger: trigger).frame(width: 1, height: 1).opacity(0.01)
+            Button("2. 画面収録（音声取り込み）を開始") { trigger += 1 }
+        }
+    }
+}
+
+private struct BroadcastPicker: UIViewRepresentable {
+    let trigger: Int
+
+    func makeUIView(context: Context) -> RPSystemBroadcastPickerView {
+        let picker = RPSystemBroadcastPickerView(frame: CGRect(x: 0, y: 0, width: 44, height: 44))
+        picker.preferredExtension = Bundle.main.object(forInfoDictionaryKey: "BroadcastExtensionID") as? String
+        picker.showsMicrophoneButton = false
+        return picker
+    }
+
+    func updateUIView(_ picker: RPSystemBroadcastPickerView, context: Context) {
+        guard trigger > 0, context.coordinator.last != trigger else { return }
+        context.coordinator.last = trigger
+        (picker.subviews.compactMap { $0 as? UIButton }.first)?.sendActions(for: .touchUpInside)
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    final class Coordinator { var last = 0 }
+}

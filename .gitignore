@@ -1,0 +1,12 @@
+*.xcodeproj
+build/
+DerivedData/
+.DS_Store
+# XcodeGen が生成する plist / entitlements
+FloatSub/Info.plist
+FloatSub/FloatSub.entitlements
+FloatSubBroadcast/Info.plist
+FloatSubBroadcast/FloatSubBroadcast.entitlements
+*.p8
+*.p12
+*.mobileprovision
