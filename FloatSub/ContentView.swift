@@ -6,6 +6,10 @@ struct ContentView: View {
     @State private var session = CaptureSession()
     @State private var options = LanguageOptions()
     @State private var probeReport = ""
+    @State private var exportContent = ExportContent.both
+    @State private var shareItem: ShareItem?
+    @State private var confirmClear = false
+    @State private var exportError = ""
 
     var body: some View {
         NavigationStack {
@@ -16,6 +20,7 @@ struct ContentView: View {
                 languageSection
                 subtitleSection
                 pipSection
+                historySection
                 transcriptSection
                 detailSection
             }
@@ -40,6 +45,12 @@ struct ContentView: View {
                     await options.loadSources(target: session.targetLanguageIdentifier)
                     fixSelection()
                 }
+            }
+            .sheet(item: $shareItem) { item in ShareSheet(url: item.url) }
+            .confirmationDialog("履歴をすべて削除しますか？", isPresented: $confirmClear, titleVisibility: .visible) {
+                Button("すべて削除", role: .destructive) { session.clearHistory() }
+            } message: {
+                Text("文字起こしと訳の履歴を削除します。元に戻せません。")
             }
             // マイクの権限がないとき、設定アプリへの案内を出す
             .alert("マイクを使用できません", isPresented: $session.microphoneDenied) {
@@ -162,6 +173,35 @@ struct ContentView: View {
             Text("字幕 PiP")
         } footer: {
             Text("iOS の PiP は同時に 1 つだけです。YouTube など他アプリの PiP が開いている間は、字幕の PiP を表示できません。")
+        }
+    }
+
+    private var historySection: some View {
+        Section {
+            Picker("書き出す内容", selection: $exportContent) {
+                ForEach(ExportContent.allCases) { Text($0.title).tag($0) }
+            }
+            Button("テキストで書き出す", systemImage: "square.and.arrow.up") { export(srt: false) }
+            Button("SRT で書き出す", systemImage: "captions.bubble") { export(srt: true) }
+            Button("履歴をすべて削除", systemImage: "trash", role: .destructive) { confirmClear = true }
+            if !exportError.isEmpty { Text(exportError).font(.footnote).foregroundStyle(.red) }
+        } header: {
+            Text("履歴（\(session.segments.count) 件）")
+        } footer: {
+            Text("履歴は端末のメモリ上だけに保持され、アプリを終了すると消えます。時刻は、取り込んだ音声の開始からの経過時間です。")
+        }
+        .disabled(session.segments.isEmpty)
+    }
+
+    /// 履歴をファイルにして共有シートを開く。
+    private func export(srt: Bool) {
+        exportError = ""
+        let body = srt ? HistoryExporter.srt(session.segments, content: exportContent)
+                       : HistoryExporter.text(session.segments, content: exportContent)
+        do {
+            shareItem = ShareItem(url: try HistoryExporter.writeTemporaryFile(body, fileExtension: srt ? "srt" : "txt"))
+        } catch {
+            exportError = "書き出しに失敗しました: \(error.localizedDescription)"
         }
     }
 

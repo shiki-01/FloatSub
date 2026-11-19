@@ -378,8 +378,19 @@ final class CaptureSession {
         pip.show(original: original, translation: translation)
     }
 
-    /// 履歴の保持件数。長時間の利用でメモリが増え続けないようにする。
-    private static let maxSegments = 300
+    /// 履歴の保持件数。長時間の利用でメモリが増え続けないようにする（履歴は端末のメモリ上だけに持つ）。
+    private static let maxSegments = 2000
+
+    /// 履歴をすべて削除する。表示中の字幕と、書き出しで作った一時ファイルも消す。
+    func clearHistory() {
+        segments.removeAll()
+        volatileText = ""
+        displayOriginal = ""
+        displayTranslation = ""
+        pip.show(original: "", translation: "字幕を待っています")
+        HistoryExporter.removeTemporaryFiles()
+        log("履歴を削除しました")
+    }
 
     /// 確定訳を字幕へ出した時点の遅延を記録する（音声が届いてから表示までの合計と、翻訳単体の時間）。
     private func recordCaptionLatency(audioEnd: Double, translationBegan: TimeInterval) {
