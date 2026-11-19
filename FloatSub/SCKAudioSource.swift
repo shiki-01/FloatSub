@@ -62,10 +62,10 @@ final class SCKAudioSource: NSObject, SCStreamOutput, SCStreamDelegate, SCConten
         // 映像は使わないため最小サイズにする
         config.width = 2
         config.height = 2
-        // 目的は音声だけのため、映像フレームの生成を最小限に抑えて発熱を減らす（1 秒に 1 枚、キューも最小）
-        config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
-        config.queueDepth = 3
-        config.showsCursor = false
+        // 目的は音声だけのため、映像フレームの負荷を最小にする。
+        // iOS の SCStreamConfiguration には minimumFrameInterval / queueDepth / showsCursor がない（iOS で利用不可）ため、
+        // フレームレートは指定できない。映像は 2x2 px とし、映像の出力（.screen）も登録しないので、
+        // 本体側ではフレームを処理しない（システムが破棄する）。
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
         try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: queue)
         try await stream.startCapture()

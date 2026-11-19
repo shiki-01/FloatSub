@@ -109,7 +109,10 @@ final class SoundEventDetector: NSObject, SNResultsObserving, @unchecked Sendabl
     private func handle(_ result: SNClassificationResult) {
         let time = timeOffset + result.timeRange.start.seconds
         func confidence(_ ids: [String]) -> Double {
-            ids.compactMap { result.classification(forIdentifier: $0)?.confidence }.map(Double.init).max() ?? 0
+            ids.compactMap { id -> Double? in
+                guard let classification = result.classification(forIdentifier: id) else { return nil }
+                return Double(classification.confidence)
+            }.max() ?? 0
         }
         for label in SoundLabel.allCases {
             if confidence(label.identifiers) >= Self.threshold {
