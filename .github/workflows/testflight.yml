@@ -91,6 +91,9 @@ jobs:
           st, certs = get("/v1/certificates?limit=200")
           if certs:
               print("証明書 HTTP", st, "種別:", sorted({c["attributes"].get("certificateType") for c in certs["data"]}))
+              for c in certs["data"]:
+                  at = c["attributes"]
+                  print("  証明書:", at.get("certificateType"), "/", at.get("name"), "/ 有効期限", at.get("expirationDate"), "/ id", c["id"])
           else:
               print("証明書 HTTP", st, "（403 ならキーの権限が Admin / App Manager 未満の可能性）")
           st, bids = get("/v1/bundleIds?limit=200")
