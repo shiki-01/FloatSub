@@ -12,12 +12,11 @@ on:
 env:
   BUNDLE_ID_PREFIX: ${{ vars.BUNDLE_ID_PREFIX }}
   DEVELOPMENT_TEAM: ${{ vars.DEVELOPMENT_TEAM }}
-  # iOS 27 SDK の可否確認後に xcode-27 / 27.0 へ切り替える
-  IOS_DEPLOYMENT_TARGET: '26.0'
+  IOS_DEPLOYMENT_TARGET: '27.0'
 
 jobs:
   testflight:
-    runs-on: macos-26
+    runs-on: xcode-27
     steps:
       - uses: actions/checkout@v4
       - name: 必須設定の確認
@@ -32,6 +31,13 @@ jobs:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+      - name: Xcode の選択（27.2 を優先）
+        run: |
+          if [ -d /Applications/Xcode_27.2.app ]; then
+            sudo xcode-select -s /Applications/Xcode_27.2.app/Contents/Developer
+          fi
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i "iOS 27" || true
       - name: XcodeGen
         run: brew install xcodegen && xcodegen generate
       - name: API キーを配置
