@@ -12,6 +12,8 @@ env:
 jobs:
   compile:
     runs-on: ${{ matrix.runner }}
+    # 検証プローブ構成は結果の報告が目的のため、失敗しても CI 全体は失敗にしない
+    continue-on-error: ${{ matrix.conditions != '' }}
     env:
       IOS_DEPLOYMENT_TARGET: ${{ matrix.target }}
     strategy:
@@ -51,6 +53,14 @@ jobs:
             echo "RESULT: ScreenCaptureKit は iOS SDK で import 不可"
           fi
           ls "$(xcrun --sdk iphoneos --show-sdk-path)/System/Library/Frameworks" | grep -i ScreenCapture || echo "SDK 内に ScreenCaptureKit.framework なし"
+      - name: ScreenCaptureKit ヘッダーの iOS 可否一覧
+        run: |
+          H="$(xcrun --sdk iphoneos --show-sdk-path)/System/Library/Frameworks/ScreenCaptureKit.framework/Headers"
+          ls "$H" || exit 0
+          echo "---- @interface / @protocol と可用性（ios を含む行）"
+          grep -nE "^@interface|^@protocol|API_AVAILABLE|API_UNAVAILABLE|NS_SWIFT_UNAVAILABLE|API_DEPRECATED" "$H"/*.h | grep -i "ios" | head -150
+          echo "---- iOS 向けと明記された宣言（API_AVAILABLE(...ios...)）"
+          grep -nE "API_AVAILABLE\(.*ios\(" "$H"/*.h | head -60
       - name: XcodeGen
         run: brew install xcodegen && xcodegen generate
       - name: Build（署名なし）
