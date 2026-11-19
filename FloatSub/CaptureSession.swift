@@ -73,6 +73,8 @@ final class CaptureSession {
     var displayTranslation = ""
     /// 表示中の訳が暫定訳（確定前）か
     var displayIsProvisional = false
+    /// 非音声イベントの表記（[音楽] [笑い] など）。訳とは別の項目として出す
+    var displaySoundBadge = ""
     /// マイクの権限がないとき true。ContentView が設定アプリへの案内を出す
     var microphoneDenied = false
     /// 登録した用語。確定した文字起こしと翻訳文へ置換をかける
@@ -135,8 +137,9 @@ final class CaptureSession {
     // 非音声イベント
     private var soundDetector: SoundEventDetector?
     /// 字幕に出している非音声イベントの表記（[音楽] など）
-    private var soundCaption: String?
-    private var soundCaptionTask: Task<Void, Never>?
+    /// 字幕に出している非音声イベントの表示期限（systemUptime）。音楽は終わるまで、それ以外は数秒間出す
+    private var soundVisibleUntil: [SoundLabel: TimeInterval] = [:]
+    private var soundBadgeTask: Task<Void, Never>?
     /// 検出中のイベントの履歴上の文節
     private var activeSoundSegments: [SoundLabel: UUID] = [:]
     /// 音楽だけが鳴っている間は true。翻訳を抑制する
@@ -508,8 +511,9 @@ final class CaptureSession {
         speakerTask = nil
         speakerDiarizer?.stop()
         speakerDiarizer = nil
-        soundCaptionTask?.cancel()
-        soundCaption = nil
+        soundBadgeTask?.cancel()
+        soundVisibleUntil.removeAll()
+        displaySoundBadge = ""
         activeSoundSegments.removeAll()
         musicSuppressed = false
         watchdogTask?.cancel()
@@ -723,11 +727,7 @@ final class CaptureSession {
         var original: String
         var translation: String
         var isProvisional = false
-        if let caption = soundCaption, rest.isEmpty {
-            // 話している途中の残りがないときは、非音声イベントの表記を出す
-            original = ""
-            translation = caption
-        } else if showProvisional, !rest.isEmpty, !provisionalTranslation.isEmpty {
+        if showProvisional, !rest.isEmpty, !provisionalTranslation.isEmpty {
             original = showLiveOriginal ? rest : ""
             translation = labeled(provisionalTranslation, speaker: speakerDiarizer?.latestLabel())
             isProvisional = true
@@ -749,11 +749,13 @@ final class CaptureSession {
                 translation = ""
             }
         }
-        guard !original.isEmpty || !translation.isEmpty else { return }
+        let badge = currentSoundBadge()
+        guard !original.isEmpty || !translation.isEmpty || !badge.isEmpty else { return }
+        displaySoundBadge = badge
         displayOriginal = original
         displayTranslation = translation
         displayIsProvisional = isProvisional
-        pip.show(original: original, translation: translation, isProvisional: isProvisional)
+        pip.show(original: original, translation: translation, isProvisional: isProvisional, soundBadge: badge)
     }
 
     /// 履歴の保持件数。長時間の利用でメモリが増え続けないようにする（履歴は端末のメモリ上だけに持つ）。
@@ -861,29 +863,45 @@ final class CaptureSession {
                                             audioStart: event.time, audioEnd: event.time + 1)
             segments.append(segment)
             activeSoundSegments[event.label] = segment.id
-            showSoundCaption(event.label.caption, keepWhileActive: event.label == .music)
+            // 音楽は終わるまで、それ以外は 3 秒間、訳とは別のバッジとして出す
+            let until = event.label == .music ? Double.infinity : ProcessInfo.processInfo.systemUptime + Self.soundBadgeSeconds
+            soundVisibleUntil[event.label] = until
+            refreshSoundBadge()
         case .ended:
             if let id = activeSoundSegments.removeValue(forKey: event.label),
                let i = segments.firstIndex(where: { $0.id == id }) {
                 segments[i].audioEnd = max(event.time, segments[i].audioStart + 1)
             }
-            if event.label == .music, soundCaption == SoundLabel.music.caption {
-                soundCaption = nil
-                updatePiP()
+            if event.label == .music {
+                // 終了の直後に消えると見落とすため、少しだけ残す
+                soundVisibleUntil[.music] = ProcessInfo.processInfo.systemUptime + 1.5
+                refreshSoundBadge()
             }
         }
     }
 
-    private func showSoundCaption(_ caption: String, keepWhileActive: Bool) {
-        soundCaptionTask?.cancel()
-        soundCaption = caption
+    private static let soundBadgeSeconds = 3.0
+
+    /// いま表示する非音声イベントの表記。複数あるときは並べる（例: 「[音楽] [笑い]」）。
+    private func currentSoundBadge() -> String {
+        let now = ProcessInfo.processInfo.systemUptime
+        return SoundLabel.allCases
+            .filter { (soundVisibleUntil[$0] ?? 0) > now }
+            .map(\.caption)
+            .joined(separator: " ")
+    }
+
+    /// バッジを更新し、期限が来たものを消すための再描画を予約する。
+    private func refreshSoundBadge() {
         updatePiP()
-        if keepWhileActive { return }
-        soundCaptionTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(3))
+        soundBadgeTask?.cancel()
+        let now = ProcessInfo.processInfo.systemUptime
+        let nextExpiry = soundVisibleUntil.values.filter { $0 > now && $0.isFinite }.min()
+        guard let nextExpiry else { return }
+        soundBadgeTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(max(0.1, nextExpiry - now)))
             guard !Task.isCancelled, let self else { return }
-            self.soundCaption = nil
-            self.updatePiP()
+            self.refreshSoundBadge()
         }
     }
 

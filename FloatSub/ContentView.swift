@@ -171,6 +171,11 @@ struct ContentView: View {
     private var liveSubtitleSection: some View {
         Section("字幕") {
             VStack(alignment: .leading, spacing: 8) {
+                if !session.displaySoundBadge.isEmpty {
+                    Text(session.displaySoundBadge)
+                        .font(.callout.bold())
+                        .foregroundStyle(.yellow)
+                }
                 if session.showOriginal, !session.displayOriginal.isEmpty {
                     Text(session.displayOriginal)
                         .font(.callout)
@@ -329,11 +334,18 @@ struct ContentView: View {
             // 新しい順に表示する
             ForEach(session.segments.reversed()) { segment in
                 VStack(alignment: .leading, spacing: 4) {
-                    Text((segment.speaker.map { "\($0): " } ?? "") + segment.text).foregroundStyle(.secondary)
-                    Text(segment.translation ?? segment.provisionalTranslation
-                         ?? (segment.isTranslationAbandoned ? "（翻訳できません）" : "（翻訳待ち）"))
-                        .font(.headline)
-                        .opacity(segment.translation == nil ? 0.5 : 1)
+                    if segment.kind == .sound {
+                        // 非音声イベントは、発話とは別の項目として、種別がわかる見た目で出す
+                        Label(segment.text, systemImage: "waveform")
+                            .font(.subheadline.bold())
+                            .foregroundStyle(.orange)
+                    } else {
+                        Text((segment.speaker.map { "\($0): " } ?? "") + segment.text).foregroundStyle(.secondary)
+                        Text(segment.translation ?? segment.provisionalTranslation
+                             ?? (segment.isTranslationAbandoned ? "（翻訳できません）" : "（翻訳待ち）"))
+                            .font(.headline)
+                            .opacity(segment.translation == nil ? 0.5 : 1)
+                    }
                 }
                 .contextMenu {
                     if segment.kind == .speech {

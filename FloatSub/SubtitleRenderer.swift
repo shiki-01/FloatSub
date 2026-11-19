@@ -46,7 +46,7 @@ enum SubtitleRenderer {
     /// フレームの画素サイズ。PiP 小窓の縦横比（16:5 程度）に合わせる
     static let size = CGSize(width: 960, height: 300)
 
-    static func makePixelBuffer(original: String, translation: String, isProvisional: Bool = false,
+    static func makePixelBuffer(original: String, translation: String, isProvisional: Bool = false, soundBadge: String = "",
                                        style: SubtitleStyle = SubtitleStyle()) -> CVPixelBuffer? {
         let attributes: [CFString: Any] = [
             kCVPixelBufferCGImageCompatibilityKey: true,
@@ -99,8 +99,23 @@ enum SubtitleRenderer {
             translationTop = 20 + originalHeight + 8
         }
 
+        // 非音声イベント（[笑い] [音楽] など）は、訳とは別に最下段へ出す。訳は消さない
+        var bottomReserved: CGFloat = 20
+        if !soundBadge.isEmpty {
+            let badgeHeight: CGFloat = 40
+            let badgeAttributes: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: 26, weight: .semibold),
+                .foregroundColor: UIColor(red: 1, green: 0.88, blue: 0.2, alpha: 1),
+                .paragraphStyle: paragraph,
+            ]
+            let badgeRect = CGRect(x: margin, y: size.height - badgeHeight - 10, width: width, height: badgeHeight - 6)
+            (soundBadge as NSString).draw(with: badgeRect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
+                                          attributes: badgeAttributes, context: nil)
+            bottomReserved = badgeHeight + 14
+        }
+
         // 日本語訳（大きく、白）。収まるまで文字サイズを下げる
-        let translationRect = CGRect(x: margin, y: translationTop, width: width, height: size.height - translationTop - 20)
+        let translationRect = CGRect(x: margin, y: translationTop, width: width, height: size.height - translationTop - bottomReserved)
         var fontSize: CGFloat = 52 * style.fontScale
         // 暫定訳は透明度を下げて、確定訳と見分けられるようにする
         let translationColor = style.textColor.uiColor.withAlphaComponent(isProvisional ? 0.5 : 1)

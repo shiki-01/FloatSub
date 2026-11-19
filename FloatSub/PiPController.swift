@@ -28,6 +28,7 @@ final class PiPController: NSObject {
     private var currentOriginal = ""
     private var currentTranslation = "字幕を待っています"
     private var currentIsProvisional = false
+    private var currentSoundBadge = ""
     private var style = SubtitleStyle()
 
     override init() {
@@ -97,12 +98,14 @@ final class PiPController: NSObject {
 
     /// 字幕を更新する。空文字は直前の表示を維持しない（空表示になる）。
     /// isProvisional が true のときは、確定前の暫定訳として薄く描く。
-    func show(original: String, translation: String, isProvisional: Bool = false) {
+    func show(original: String, translation: String, isProvisional: Bool = false, soundBadge: String = "") {
         // 内容が変わっていなければ描き直さない（フレーム生成の負荷を避ける）
-        guard original != currentOriginal || translation != currentTranslation || isProvisional != currentIsProvisional else { return }
+        guard original != currentOriginal || translation != currentTranslation || isProvisional != currentIsProvisional
+                || soundBadge != currentSoundBadge else { return }
         currentOriginal = original
         currentTranslation = translation
         currentIsProvisional = isProvisional
+        currentSoundBadge = soundBadge
         render()
     }
 
@@ -116,7 +119,7 @@ final class PiPController: NSObject {
     private func render() {
         guard let pixelBuffer = SubtitleRenderer.makePixelBuffer(
             original: currentOriginal, translation: currentTranslation,
-            isProvisional: currentIsProvisional, style: style) else { return }
+            isProvisional: currentIsProvisional, soundBadge: currentSoundBadge, style: style) else { return }
         lastPixelBuffer = pixelBuffer
         enqueue(pixelBuffer)
     }
