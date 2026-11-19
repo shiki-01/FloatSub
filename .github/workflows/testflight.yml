@@ -47,6 +47,40 @@ jobs:
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+      - name: App Store Connect API 認証の事前確認（値は出力しない）
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv" >/dev/null
+          "$RUNNER_TEMP/venv/bin/pip" install -q pyjwt cryptography
+          "$RUNNER_TEMP/venv/bin/python" - <<'PY'
+          import os, re, time, json, urllib.request, urllib.error, jwt
+          kid = os.environ["ASC_KEY_ID"]; iss = os.environ["ASC_ISSUER_ID"]
+          path = os.path.join(os.environ["RUNNER_TEMP"], "keys", f"AuthKey_{kid}.p8")
+          pem = open(path).read()
+          print("Key ID の形式(英数字10文字):", bool(re.fullmatch(r"[A-Z0-9]{10}", kid)))
+          print("Issuer ID の形式(UUID):", bool(re.fullmatch(r"[0-9a-fA-F-]{36}", iss)))
+          print("p8 の行数:", len(pem.strip().splitlines()),
+                "/ BEGIN 行:", "BEGIN PRIVATE KEY" in pem, "/ END 行:", "END PRIVATE KEY" in pem)
+          try:
+              now = int(time.time())
+              token = jwt.encode({"iss": iss, "iat": now, "exp": now + 600, "aud": "appstoreconnect-v1"},
+                                 pem, algorithm="ES256", headers={"kid": kid, "typ": "JWT"})
+          except Exception as e:
+              print("JWT の生成に失敗（p8 の内容が不正）:", type(e).__name__); raise SystemExit(1)
+          req = urllib.request.Request("https://api.appstoreconnect.apple.com/v1/apps?limit=200",
+                                       headers={"Authorization": f"Bearer {token}"})
+          try:
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  body = json.load(r)
+                  ids = [a["attributes"].get("bundleId") for a in body.get("data", [])]
+                  print("HTTP", r.status, "/ 登録済みアプリの Bundle ID:", ids)
+                  expected = os.environ["BUNDLE_ID_PREFIX"] + ".floatsub"
+                  print("期待する Bundle ID が存在:", expected in ids)
+          except urllib.error.HTTPError as e:
+              print("HTTP", e.code, "（401: Key ID / Issuer ID / p8 の不一致、403: 権限不足）"); raise SystemExit(1)
+          PY
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
       - name: Archive
         run: |
           set -o pipefail
