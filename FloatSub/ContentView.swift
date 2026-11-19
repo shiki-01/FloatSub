@@ -120,11 +120,12 @@ struct ContentView: View {
                 }
                 Text(session.displayTranslation.isEmpty ? "字幕を待っています" : session.displayTranslation)
                     .font(.system(size: 22 * session.fontScale, weight: .bold))
-                    .foregroundStyle(session.displayTranslation.isEmpty ? .secondary : .primary)
+                    .foregroundStyle(session.displayTranslation.isEmpty ? Color.secondary : Color(uiColor: session.textColor.uiColor))
                     .opacity(session.displayIsProvisional ? 0.5 : 1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 4)
+            .listRowBackground(Color(red: 0.05, green: 0.06, blue: 0.09).opacity(session.backgroundOpacity))
         }
     }
 
@@ -176,6 +177,13 @@ struct ContentView: View {
                 Text("特大").tag(1.4)
             }
             .pickerStyle(.segmented)
+            Picker("訳の文字色", selection: $session.textColor) {
+                ForEach(SubtitleTextColor.allCases) { Text($0.title).tag($0) }
+            }
+            VStack(alignment: .leading) {
+                Text("背景の濃さ（\(Int(session.backgroundOpacity * 100))%）")
+                Slider(value: $session.backgroundOpacity, in: 0.3...1.0, step: 0.1)
+            }
         }
     }
 

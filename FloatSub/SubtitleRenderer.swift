@@ -2,8 +2,38 @@ import UIKit
 import CoreMedia
 import CoreVideo
 
+/// 訳文の文字色。
+enum SubtitleTextColor: String, CaseIterable, Identifiable {
+    case white
+    case yellow
+    case green
+    case cyan
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .white: "白"
+        case .yellow: "黄"
+        case .green: "緑"
+        case .cyan: "水色"
+        }
+    }
+    var uiColor: UIColor {
+        switch self {
+        case .white: .white
+        case .yellow: UIColor(red: 1, green: 0.88, blue: 0.2, alpha: 1)
+        case .green: UIColor(red: 0.45, green: 0.95, blue: 0.5, alpha: 1)
+        case .cyan: UIColor(red: 0.4, green: 0.9, blue: 1, alpha: 1)
+        }
+    }
+}
+
 /// 字幕の表示設定。
 struct SubtitleStyle: Equatable {
+    /// 背景の不透明度（0.3〜1.0）。PiP は映像のため、下げると暗い背景が薄くなる（透過はしない）
+    var backgroundOpacity: CGFloat = 1.0
+    /// 訳文の文字色
+    var textColor = SubtitleTextColor.white
     /// 原文（英語など）を日本語訳の上に小さく表示するか
     var showOriginal = true
     /// 文字サイズの倍率（0.8〜1.4）
@@ -44,7 +74,8 @@ enum SubtitleRenderer {
         UIGraphicsPushContext(context)
         defer { UIGraphicsPopContext() }
 
-        UIColor(red: 0.05, green: 0.06, blue: 0.09, alpha: 1).setFill()
+        context.clear(CGRect(origin: .zero, size: size))
+        UIColor(red: 0.05, green: 0.06, blue: 0.09, alpha: style.backgroundOpacity).setFill()
         context.fill(CGRect(origin: .zero, size: size))
 
         let margin: CGFloat = 36
@@ -72,7 +103,7 @@ enum SubtitleRenderer {
         let translationRect = CGRect(x: margin, y: translationTop, width: width, height: size.height - translationTop - 20)
         var fontSize: CGFloat = 52 * style.fontScale
         // 暫定訳は透明度を下げて、確定訳と見分けられるようにする
-        let translationColor = UIColor.white.withAlphaComponent(isProvisional ? 0.5 : 1)
+        let translationColor = style.textColor.uiColor.withAlphaComponent(isProvisional ? 0.5 : 1)
         var translationAttributes: [NSAttributedString.Key: Any] = [:]
         while fontSize >= 24 {
             translationAttributes = [

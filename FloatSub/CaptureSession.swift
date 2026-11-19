@@ -60,6 +60,9 @@ final class CaptureSession {
     /// 話している途中の訳（暫定訳）を薄く表示するか
     var showProvisional = true
     var fontScale = 1.0
+    /// 字幕フレームの背景の不透明度と、訳文の文字色
+    var backgroundOpacity = 1.0
+    var textColor = SubtitleTextColor.white
     /// 話している途中の原文のうち、区切り（履歴へ移した部分）を除いた残り
     var volatileText = ""
     /// アプリ内の字幕表示用（PiP と同じ内容）。マイク使用時など、PiP を使わずに見る場合に使う
@@ -129,13 +132,15 @@ final class CaptureSession {
         var showLiveOriginal: Bool
         var showProvisional: Bool
         var fontScale: Double
+        var backgroundOpacity: Double
+        var textColor: SubtitleTextColor
         var glossary: [GlossaryEntry]
     }
 
     var settingsSnapshot: SettingsSnapshot {
         SettingsSnapshot(locale: localeIdentifier, target: targetLanguageIdentifier, source: captureSource,
                          showOriginal: showOriginal, showLiveOriginal: showLiveOriginal, showProvisional: showProvisional,
-                         fontScale: fontScale, glossary: glossary)
+                         fontScale: fontScale, backgroundOpacity: backgroundOpacity, textColor: textColor, glossary: glossary)
     }
 
     init() {
@@ -148,6 +153,8 @@ final class CaptureSession {
         showLiveOriginal = d.bool(forKey: "showLiveOriginal")
         if d.object(forKey: "showProvisional") != nil { showProvisional = d.bool(forKey: "showProvisional") }
         if d.object(forKey: "fontScale") != nil { fontScale = d.double(forKey: "fontScale") }
+        if d.object(forKey: "backgroundOpacity") != nil { backgroundOpacity = d.double(forKey: "backgroundOpacity") }
+        if let raw = d.string(forKey: "textColor"), let v = SubtitleTextColor(rawValue: raw) { textColor = v }
         if let data = d.data(forKey: "glossaryEntries"),
            let entries = try? JSONDecoder().decode([GlossaryEntry].self, from: data) { glossary = entries }
     }
@@ -161,12 +168,15 @@ final class CaptureSession {
         d.set(showLiveOriginal, forKey: "showLiveOriginal")
         d.set(showProvisional, forKey: "showProvisional")
         d.set(fontScale, forKey: "fontScale")
+        d.set(backgroundOpacity, forKey: "backgroundOpacity")
+        d.set(textColor.rawValue, forKey: "textColor")
         if let data = try? JSONEncoder().encode(glossary) { d.set(data, forKey: "glossaryEntries") }
     }
 
     /// 表示設定を PiP の字幕へ反映する。
     func applySubtitleStyle() {
-        pip.apply(style: SubtitleStyle(showOriginal: showOriginal, fontScale: CGFloat(fontScale)))
+        pip.apply(style: SubtitleStyle(backgroundOpacity: CGFloat(backgroundOpacity), textColor: textColor,
+                                       showOriginal: showOriginal, fontScale: CGFloat(fontScale)))
         // 暫定訳を切ったときは、出ている暫定訳を捨てて確定した字幕へ戻す
         if !showProvisional, displayIsProvisional {
             resetProvisional()
