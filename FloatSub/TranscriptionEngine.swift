@@ -9,6 +9,8 @@ struct TranscriptSegment: Identifiable {
     let id = UUID()
     var kind = Kind.speech
     var text: String
+    /// 話者ラベル（「話者1」など）。話者分離がオフ、または判定できないときは nil
+    var speaker: String?
     /// 日本語訳。翻訳完了まで nil
     var translation: String?
     /// 確定訳が届くまで仮に出す暫定訳（薄く表示する）

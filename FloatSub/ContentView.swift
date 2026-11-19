@@ -28,6 +28,7 @@ struct ContentView: View {
                 languageSection
                 glossarySection
                 soundSection
+                speakerSection
                 subtitleSection
                 pipSection
                 historySection
@@ -218,6 +219,15 @@ struct ContentView: View {
         }
     }
 
+    private var speakerSection: some View {
+        Section {
+            Toggle("話者分離（話者1・話者2…）", isOn: $session.speakerDiarization)
+                .disabled(session.isRunning)
+        } footer: {
+            Text("オンにすると、字幕と履歴に「話者1」「話者2」のラベルを付けます。端末内の Core ML モデルで処理しますが、初回の開始時にモデルを外部（huggingface.co）からダウンロードします。誤り率は 20〜30% 程度が目安で、同時に話す場面や話者が多い場面では乱れます。次の開始から有効です。")
+        }
+    }
+
     private var glossarySection: some View {
         Section {
             NavigationLink {
@@ -319,7 +329,7 @@ struct ContentView: View {
             // 新しい順に表示する
             ForEach(session.segments.reversed()) { segment in
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(segment.text).foregroundStyle(.secondary)
+                    Text((segment.speaker.map { "\($0): " } ?? "") + segment.text).foregroundStyle(.secondary)
                     Text(segment.translation ?? segment.provisionalTranslation
                          ?? (segment.isTranslationAbandoned ? "（翻訳できません）" : "（翻訳待ち）"))
                         .font(.headline)

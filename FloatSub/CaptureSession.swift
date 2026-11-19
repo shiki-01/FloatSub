@@ -61,6 +61,8 @@ final class CaptureSession {
     var showProvisional = true
     /// 笑い声・音楽・拍手などの非音声イベントを検出して字幕と履歴に出すか（既定はオフ）
     var soundRecognition = false
+    /// 話者を分離して、字幕と履歴に話者ラベルを付けるか（既定はオフ）
+    var speakerDiarization = false
     var fontScale = 1.0
     /// 字幕フレームの背景の不透明度と、訳文の文字色
     var backgroundOpacity = 1.0
@@ -119,6 +121,9 @@ final class CaptureSession {
     private var volatileCaptured: TimeInterval?
     /// 現在の残りの先頭にあたる音声位置
     private var restAudioStart: Double?
+    // 話者分離
+    private var speakerDiarizer: SpeakerDiarizer?
+    private var speakerTask: Task<Void, Never>?
     // 非音声イベント
     private var soundDetector: SoundEventDetector?
     /// 字幕に出している非音声イベントの表記（[音楽] など）
@@ -157,6 +162,7 @@ final class CaptureSession {
         var showLiveOriginal: Bool
         var showProvisional: Bool
         var soundRecognition: Bool
+        var speakerDiarization: Bool
         var fontScale: Double
         var backgroundOpacity: Double
         var textColor: SubtitleTextColor
@@ -166,7 +172,7 @@ final class CaptureSession {
     var settingsSnapshot: SettingsSnapshot {
         SettingsSnapshot(locale: localeIdentifier, target: targetLanguageIdentifier, source: captureSource,
                          showOriginal: showOriginal, showLiveOriginal: showLiveOriginal, showProvisional: showProvisional,
-                         soundRecognition: soundRecognition, fontScale: fontScale, backgroundOpacity: backgroundOpacity, textColor: textColor, glossary: glossary)
+                         soundRecognition: soundRecognition, speakerDiarization: speakerDiarization, fontScale: fontScale, backgroundOpacity: backgroundOpacity, textColor: textColor, glossary: glossary)
     }
 
     /// 熱状態の表示名
@@ -203,6 +209,7 @@ final class CaptureSession {
         if d.object(forKey: "showOriginal") != nil { showOriginal = d.bool(forKey: "showOriginal") }
         showLiveOriginal = d.bool(forKey: "showLiveOriginal")
         soundRecognition = d.bool(forKey: "soundRecognition")
+        speakerDiarization = d.bool(forKey: "speakerDiarization")
         if d.object(forKey: "showProvisional") != nil { showProvisional = d.bool(forKey: "showProvisional") }
         if d.object(forKey: "fontScale") != nil { fontScale = d.double(forKey: "fontScale") }
         if d.object(forKey: "backgroundOpacity") != nil { backgroundOpacity = d.double(forKey: "backgroundOpacity") }
@@ -220,6 +227,7 @@ final class CaptureSession {
         d.set(showLiveOriginal, forKey: "showLiveOriginal")
         d.set(showProvisional, forKey: "showProvisional")
         d.set(soundRecognition, forKey: "soundRecognition")
+        d.set(speakerDiarization, forKey: "speakerDiarization")
         d.set(fontScale, forKey: "fontScale")
         d.set(backgroundOpacity, forKey: "backgroundOpacity")
         d.set(textColor.rawValue, forKey: "textColor")
@@ -276,6 +284,7 @@ final class CaptureSession {
             log("文字起こし準備完了 (\(localeIdentifier))")
 
             if soundRecognition { startSoundDetector() } else { soundDetector = nil }
+            await startSpeakerDiarizer()
             let handler = makeBufferHandler()
             switch captureSource {
             case .replayKit:
@@ -487,6 +496,10 @@ final class CaptureSession {
         cancelPartialWork()
         soundDetector?.stop()
         soundDetector = nil
+        speakerTask?.cancel()
+        speakerTask = nil
+        speakerDiarizer?.stop()
+        speakerDiarizer = nil
         soundCaptionTask?.cancel()
         soundCaption = nil
         activeSoundSegments.removeAll()
@@ -508,10 +521,12 @@ final class CaptureSession {
     /// 受信した音声を文字起こしへ流し、診断値を更新する。取り込み側の Thread から呼ばれる。
     private func makeBufferHandler() -> (AVAudioPCMBuffer) -> Void {
         let detector = soundDetector
+        let diarizer = speakerDiarizer
         return { [weak self] buffer in
             guard let self else { return }
             self.engine.feed(buffer)
             detector?.feed(buffer)
+            diarizer?.feed(buffer)
             let rms = Self.rms(buffer)
             let rate = buffer.format.sampleRate
             Task { @MainActor in
@@ -705,16 +720,16 @@ final class CaptureSession {
             translation = caption
         } else if showProvisional, !rest.isEmpty, !provisionalTranslation.isEmpty {
             original = showLiveOriginal ? rest : ""
-            translation = provisionalTranslation
+            translation = labeled(provisionalTranslation, speaker: speakerDiarizer?.latestLabel())
             isProvisional = true
         } else {
             original = (showLiveOriginal && !rest.isEmpty) ? rest : (last?.text ?? "")
             if let last {
                 if let t = last.translation {
-                    translation = t
+                    translation = last.kind == .speech ? labeled(t, speaker: last.speaker) : t
                 } else if showProvisional, let p = last.provisionalTranslation {
                     // 確定訳が届くまで、直前の暫定訳を薄く出し続ける
-                    translation = p
+                    translation = labeled(p, speaker: last.speaker)
                     isProvisional = true
                 } else if last.isTranslationAbandoned {
                     translation = "（翻訳できません）"
@@ -762,6 +777,51 @@ final class CaptureSession {
         latencyStats.add(.caption, seconds: total)
         latencySummary = latencyStats.summary
         log(String(format: "遅延 字幕（確定訳）%.2f 秒", total) + detail)
+    }
+
+    // MARK: - 話者分離
+
+    /// 設定がオンなら、話者分離のモデルを準備して開始する。失敗しても文字起こしと翻訳は続ける。
+    private func startSpeakerDiarizer() async {
+        speakerDiarizer = nil
+        guard speakerDiarization else { return }
+        captureStatus = "話者分離のモデルを準備中（初回はダウンロード）"
+        log("話者分離のモデルを準備しています")
+        let diarizer = SpeakerDiarizer()
+        do {
+            try await diarizer.prepare()
+        } catch {
+            log("話者分離を使えません（話者ラベルなしで続行します）: \(error.localizedDescription)")
+            return
+        }
+        speakerDiarizer = diarizer
+        log("話者分離を有効にしました")
+        // 文節の話者は、分離の結果が遅れて確定するため、直近の文節を定期的に付け直す
+        speakerTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1.5))
+                guard !Task.isCancelled, let self else { return }
+                self.refreshSpeakerLabels()
+            }
+        }
+    }
+
+    private func refreshSpeakerLabels() {
+        guard let diarizer = speakerDiarizer else { return }
+        var changed = false
+        for i in segments.indices.suffix(30) where segments[i].kind == .speech {
+            if let label = diarizer.label(from: segments[i].audioStart, to: segments[i].audioEnd), label != segments[i].speaker {
+                segments[i].speaker = label
+                changed = true
+            }
+        }
+        if changed { updatePiP() }
+    }
+
+    /// 字幕の訳に話者ラベルを付ける。
+    private func labeled(_ text: String, speaker: String?) -> String {
+        guard let speaker, !text.isEmpty else { return text }
+        return "\(speaker): \(text)"
     }
 
     // MARK: - 非音声イベント（笑い・音楽・拍手など）
@@ -829,6 +889,7 @@ final class CaptureSession {
     /// 履歴へ文節を追加する。reuse の訳（暫定訳）が同じ原文のものなら、翻訳を省いてそのまま確定訳にする。
     private func appendSegment(text: String, start: Double, end: Double) {
         var segment = TranscriptSegment(text: text, audioStart: start, audioEnd: end)
+        segment.speaker = speakerDiarizer?.label(from: start, to: end)
         if musicSuppressed {
             // 音楽だけが鳴っている間の認識結果は、翻訳しない
             segment.translation = "♪"
