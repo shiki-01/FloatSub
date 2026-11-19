@@ -27,6 +27,7 @@ struct ContentView: View {
                 if session.captureSource == .microphone { liveSubtitleSection }
                 languageSection
                 glossarySection
+                lightSection
                 soundSection
                 speakerSection
                 subtitleSection
@@ -226,6 +227,15 @@ struct ContentView: View {
             })
     }
 
+    private var lightSection: some View {
+        Section {
+            Toggle("軽量モード", isOn: $session.lightMode)
+                .disabled(session.isRunning)
+        } footer: {
+            Text("ゲームなど、ほかのアプリが重いときに使います。暫定訳・音の認識・話者分離を止めて、翻訳と描画の負荷を下げます。確定した文ごとの翻訳と字幕はそのまま使えます。次の開始から有効です。")
+        }
+    }
+
     private var soundSection: some View {
         Section {
             Toggle("音の認識（笑い・音楽・拍手など）", isOn: $session.soundRecognition)
@@ -270,6 +280,10 @@ struct ContentView: View {
             Toggle("話している途中の原文も表示", isOn: $session.showLiveOriginal)
                 .disabled(!session.showOriginal)
             Toggle("暫定訳を表示（薄く表示）", isOn: $session.showProvisional)
+            Picker("字幕の切り替え", selection: $session.captionSpeed) {
+                ForEach(CaptionSpeed.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented)
             Picker("文字サイズ", selection: $session.fontScale) {
                 Text("小").tag(0.8)
                 Text("標準").tag(1.0)

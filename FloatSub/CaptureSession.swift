@@ -58,6 +58,10 @@ final class CaptureSession {
     var showLiveOriginal = false
     /// 話している途中の訳（暫定訳）を薄く表示するか
     var showProvisional = true
+    /// 字幕を切り替える速さ（同じ字幕を最低どれだけ出し続けるか）
+    var captionSpeed = CaptionSpeed.standard
+    /// 軽量モード: 暫定訳・音の認識・話者分離を使わず、負荷を下げる（ゲーム中など）
+    var lightMode = false
     /// 笑い声・音楽・拍手などの非音声イベントを検出して字幕と履歴に出すか（既定はオフ）
     var soundRecognition = false
     /// 検出する種類（音楽・笑い・拍手・歓声）。既定はすべて
@@ -157,6 +161,10 @@ final class CaptureSession {
     private var fileTask: Task<Void, Never>?
     /// ファイルの処理中は、途中結果を使わず確定結果だけを履歴にする
     private var fileMode = false
+    // 字幕の切り替えの制御
+    private var shownContent: DisplayContent?
+    private var shownAt: TimeInterval = 0
+    private var holdTask: Task<Void, Never>?
     private var provisionalTask: Task<Void, Never>?
     private var pauseTask: Task<Void, Never>?
     private var provisionalSource = ""
@@ -174,6 +182,8 @@ final class CaptureSession {
         var showOriginal: Bool
         var showLiveOriginal: Bool
         var showProvisional: Bool
+        var captionSpeed: CaptionSpeed
+        var lightMode: Bool
         var soundRecognition: Bool
         var soundLabels: Set<SoundLabel>
         var speakerDiarization: Bool
@@ -186,8 +196,12 @@ final class CaptureSession {
     var settingsSnapshot: SettingsSnapshot {
         SettingsSnapshot(locale: localeIdentifier, target: targetLanguageIdentifier, source: captureSource,
                          showOriginal: showOriginal, showLiveOriginal: showLiveOriginal, showProvisional: showProvisional,
+                         captionSpeed: captionSpeed, lightMode: lightMode,
                          soundRecognition: soundRecognition, soundLabels: soundLabels, speakerDiarization: speakerDiarization, fontScale: fontScale, backgroundOpacity: backgroundOpacity, textColor: textColor, glossary: glossary)
     }
+
+    /// 暫定訳を使うか（軽量モードでは使わない）
+    private var provisionalEnabled: Bool { showProvisional && !lightMode }
 
     /// 熱状態の表示名
     var thermalStateText: String {
@@ -225,6 +239,8 @@ final class CaptureSession {
         soundRecognition = d.bool(forKey: "soundRecognition")
         if let raw = d.stringArray(forKey: "soundLabels") { soundLabels = Set(raw.compactMap(SoundLabel.init(rawValue:))) }
         speakerDiarization = d.bool(forKey: "speakerDiarization")
+        if let raw = d.string(forKey: "captionSpeed"), let v = CaptionSpeed(rawValue: raw) { captionSpeed = v }
+        lightMode = d.bool(forKey: "lightMode")
         if d.object(forKey: "showProvisional") != nil { showProvisional = d.bool(forKey: "showProvisional") }
         if d.object(forKey: "fontScale") != nil { fontScale = d.double(forKey: "fontScale") }
         if d.object(forKey: "backgroundOpacity") != nil { backgroundOpacity = d.double(forKey: "backgroundOpacity") }
@@ -241,6 +257,8 @@ final class CaptureSession {
         d.set(showOriginal, forKey: "showOriginal")
         d.set(showLiveOriginal, forKey: "showLiveOriginal")
         d.set(showProvisional, forKey: "showProvisional")
+        d.set(captionSpeed.rawValue, forKey: "captionSpeed")
+        d.set(lightMode, forKey: "lightMode")
         d.set(soundRecognition, forKey: "soundRecognition")
         d.set(soundLabels.map(\.rawValue).sorted(), forKey: "soundLabels")
         d.set(speakerDiarization, forKey: "speakerDiarization")
@@ -261,7 +279,7 @@ final class CaptureSession {
         pip.apply(style: SubtitleStyle(backgroundOpacity: CGFloat(backgroundOpacity), textColor: textColor,
                                        showOriginal: showOriginal, fontScale: CGFloat(fontScale)))
         // 暫定訳を切ったときは、出ている暫定訳を捨てて確定した字幕へ戻す
-        if !showProvisional, displayIsProvisional {
+        if !provisionalEnabled, displayIsProvisional {
             resetProvisional()
             for i in segments.indices { segments[i].provisionalTranslation = nil }
             updatePiP()
@@ -299,7 +317,7 @@ final class CaptureSession {
             try await engine.start(localeIdentifier: localeIdentifier)
             log("文字起こし準備完了 (\(localeIdentifier))")
 
-            if soundRecognition { startSoundDetector() } else { soundDetector = nil }
+            if soundRecognition, !lightMode { startSoundDetector() } else { soundDetector = nil }
             await startSpeakerDiarizer()
             let handler = makeBufferHandler()
             switch captureSource {
@@ -522,6 +540,8 @@ final class CaptureSession {
         speakerTask = nil
         speakerDiarizer?.stop()
         speakerDiarizer = nil
+        holdTask?.cancel()
+        shownContent = nil
         soundBadgeTask?.cancel()
         soundVisibleUntil.removeAll()
         displaySoundBadge = ""
@@ -733,12 +753,13 @@ final class CaptureSession {
     /// 話している途中の残りに暫定訳があればそれを（薄く）出し、なければ最新の確定文節を出す。
     /// showLiveOriginal が有効なら、確定前の原文を原文欄に出す。
     private func updatePiP() {
-        let last = segments.last
+        // 非音声イベントの行（kind == .sound）ではなく、直近の発話を字幕にする
+        let last = segments.last { $0.kind == .speech }
         let rest = volatileText
         var original: String
         var translation: String
         var isProvisional = false
-        if showProvisional, !rest.isEmpty, !provisionalTranslation.isEmpty {
+        if provisionalEnabled, !rest.isEmpty, !provisionalTranslation.isEmpty {
             original = showLiveOriginal ? rest : ""
             translation = labeled(provisionalTranslation, speaker: speakerDiarizer?.latestLabel())
             isProvisional = true
@@ -746,27 +767,71 @@ final class CaptureSession {
             original = (showLiveOriginal && !rest.isEmpty) ? rest : (last?.text ?? "")
             if let last {
                 if let t = last.translation {
-                    translation = last.kind == .speech ? labeled(t, speaker: last.speaker) : t
-                } else if showProvisional, let p = last.provisionalTranslation {
+                    translation = labeled(t, speaker: last.speaker)
+                } else if provisionalEnabled, let p = last.provisionalTranslation {
                     // 確定訳が届くまで、直前の暫定訳を薄く出し続ける
                     translation = labeled(p, speaker: last.speaker)
                     isProvisional = true
                 } else if last.isTranslationAbandoned {
                     translation = "（翻訳できません）"
                 } else {
-                    translation = "翻訳中…"
+                    translation = Self.translatingText
                 }
             } else {
                 translation = ""
             }
         }
+        var content = DisplayContent(original: original, translation: translation, isProvisional: isProvisional)
         let badge = currentSoundBadge()
         guard !original.isEmpty || !translation.isEmpty || !badge.isEmpty else { return }
+
+        let now = ProcessInfo.processInfo.systemUptime
+        if let shown = shownContent, content != shown {
+            if content.translation == Self.translatingText, !shown.translation.isEmpty {
+                // 「翻訳中…」には切り替えず、訳が届くまで前の字幕を保つ
+                content = shown
+            } else if content.original != shown.original || content.translation != shown.translation {
+                // 読み終える前に切り替わらないよう、同じ字幕を最低限の時間は出し続け、時間が来たら最新の内容へ切り替える
+                let remaining = shownAt + captionHold(for: shown.translation) - now
+                if remaining > 0 {
+                    content = shown
+                    scheduleHoldRelease(after: remaining)
+                }
+            }
+        }
+        if content != shownContent {
+            shownContent = content
+            shownAt = now
+        }
         displaySoundBadge = badge
-        displayOriginal = original
-        displayTranslation = translation
-        displayIsProvisional = isProvisional
-        pip.show(original: original, translation: translation, isProvisional: isProvisional, soundBadge: badge)
+        displayOriginal = content.original
+        displayTranslation = content.translation
+        displayIsProvisional = content.isProvisional
+        pip.show(original: content.original, translation: content.translation,
+                 isProvisional: content.isProvisional, soundBadge: badge)
+    }
+
+    private struct DisplayContent: Equatable {
+        var original: String
+        var translation: String
+        var isProvisional: Bool
+    }
+
+    private static let translatingText = "翻訳中…"
+
+    /// 字幕を最低限出し続ける時間（秒）。訳の長さに応じて 1.2〜3.5 秒、切り替えの速さの設定で倍率をかける。
+    private func captionHold(for translation: String) -> TimeInterval {
+        let base = min(max(0.9 + 0.05 * Double(translation.count), 1.2), 3.5)
+        return base * captionSpeed.multiplier
+    }
+
+    private func scheduleHoldRelease(after seconds: TimeInterval) {
+        holdTask?.cancel()
+        holdTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(max(0.05, seconds)))
+            guard !Task.isCancelled, let self else { return }
+            self.updatePiP()
+        }
     }
 
     /// 履歴の保持件数。長時間の利用でメモリが増え続けないようにする（履歴は端末のメモリ上だけに持つ）。
@@ -779,6 +844,8 @@ final class CaptureSession {
         displayOriginal = ""
         displayTranslation = ""
         displayIsProvisional = false
+        shownContent = nil
+        holdTask?.cancel()
         pip.show(original: "", translation: "字幕を待っています")
         HistoryExporter.removeTemporaryFiles()
         log("履歴を削除しました")
@@ -806,7 +873,7 @@ final class CaptureSession {
     /// 設定がオンなら、話者分離のモデルを準備して開始する。失敗しても文字起こしと翻訳は続ける。
     private func startSpeakerDiarizer() async {
         speakerDiarizer = nil
-        guard speakerDiarization else { return }
+        guard speakerDiarization, !lightMode else { return }
         captureStatus = "話者分離のモデルを準備中（初回はダウンロード）"
         log("話者分離のモデルを準備しています")
         let diarizer = SpeakerDiarizer()
@@ -921,7 +988,7 @@ final class CaptureSession {
 
     /// 暫定訳を作る最小の文字数と、翻訳を始める最小の間隔
     private static let provisionalMinChars = 4
-    private static let provisionalInterval = 0.25
+    private static let provisionalInterval = 0.8
     /// 途中結果がこの時間変わらなければ、無音とみなして残りを区切る
     private static let pauseCommit = Duration.milliseconds(700)
 
@@ -932,7 +999,7 @@ final class CaptureSession {
         if musicSuppressed {
             // 音楽だけが鳴っている間の認識結果は、翻訳しない
             segment.translation = "♪"
-        } else if showProvisional, !provisionalTranslation.isEmpty {
+        } else if provisionalEnabled, !provisionalTranslation.isEmpty {
             if provisionalSource == text {
                 segment.translation = provisionalTranslation
             } else {
@@ -992,7 +1059,7 @@ final class CaptureSession {
 
     /// 話している途中の残りを翻訳して暫定訳にする。同時に 1 件だけ実行し、終わったら最新の残りで繰り返す。
     private func scheduleProvisional() {
-        guard showProvisional, !musicSuppressed, !isThermallyConstrained, translator.isReady, provisionalTask == nil else { return }
+        guard provisionalEnabled, !musicSuppressed, !isThermallyConstrained, translator.isReady, provisionalTask == nil else { return }
         provisionalTask = Task { [weak self] in await self?.runProvisionalLoop() }
     }
 
@@ -1000,7 +1067,7 @@ final class CaptureSession {
         defer { provisionalTask = nil }
         while !Task.isCancelled {
             let text = volatileText.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard showProvisional, !isThermallyConstrained, text.count >= Self.provisionalMinChars,
+            guard provisionalEnabled, !isThermallyConstrained, text.count >= Self.provisionalMinChars,
                   text != provisionalSource else { return }
             let generation = provisionalGeneration
             let captured = volatileCaptured
@@ -1077,7 +1144,7 @@ final class CaptureSession {
             volatileText = chunker.rest(of: text)
             scheduleProvisional()
             schedulePauseCommit()
-            if showLiveOriginal || showProvisional { updatePiP() }
+            if showLiveOriginal || provisionalEnabled { updatePiP() }
         }
     }
 
@@ -1092,5 +1159,28 @@ final class CaptureSession {
         var sum: Float = 0
         for i in 0..<Int(buffer.frameLength) { sum += ch[i] * ch[i] }
         return (sum / Float(buffer.frameLength)).squareRoot()
+    }
+}
+
+/// 字幕を切り替える速さ。同じ字幕を最低限出し続ける時間の倍率。
+enum CaptionSpeed: String, CaseIterable, Identifiable {
+    case fast
+    case standard
+    case slow
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .fast: "速い"
+        case .standard: "標準"
+        case .slow: "ゆっくり"
+        }
+    }
+    var multiplier: Double {
+        switch self {
+        case .fast: 0.5
+        case .standard: 1.0
+        case .slow: 1.7
+        }
     }
 }
