@@ -61,6 +61,14 @@ jobs:
           grep -nE "^@interface|^@protocol|API_AVAILABLE|API_UNAVAILABLE|NS_SWIFT_UNAVAILABLE|API_DEPRECATED" "$H"/*.h | grep -i "ios" | head -150
           echo "---- iOS 向けと明記された宣言（API_AVAILABLE(...ios...)）"
           grep -nE "API_AVAILABLE\(.*ios\(" "$H"/*.h | head -60
+      - name: ScreenCaptureKit 主要ヘッダーの宣言本体（コメント除去）
+        run: |
+          H="$(xcrun --sdk iphoneos --show-sdk-path)/System/Library/Frameworks/ScreenCaptureKit.framework/Headers"
+          [ -d "$H" ] || exit 0
+          for f in SCContentSharingPicker.h SCStream.h; do
+            echo "=================== $f"
+            perl -0pe 's{/\*.*?\*/}{}gs' "$H/$f" | grep -vE '^\s*$|^\s*//|^#import|^NS_ASSUME|^NS_ASSUME_NONNULL' | sed -E 's/^(.{0,260}).*/\1/' | head -400
+          done
       - name: XcodeGen
         run: brew install xcodegen && xcodegen generate
       - name: Build（署名なし）
