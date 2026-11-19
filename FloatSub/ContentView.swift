@@ -343,6 +343,7 @@ struct ContentView: View {
                 if session.captureSource == .replayKit {
                     LabeledContent("拡張の接続", value: session.extensionConnected ? "接続中" : "未接続")
                 }
+                LabeledContent("端末の熱状態", value: session.thermalStateText)
                 LabeledContent("未翻訳の滞留", value: "\(session.pendingTranslationCount) 件")
                 if session.abandonedTranslationCount > 0 {
                     LabeledContent("翻訳をあきらめた文節", value: "\(session.abandonedTranslationCount) 件")

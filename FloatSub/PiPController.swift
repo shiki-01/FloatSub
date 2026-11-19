@@ -17,6 +17,9 @@ final class PiPController: NSObject {
     let displayLayer = AVSampleBufferDisplayLayer()
     var onLog: ((String) -> Void)?
 
+    /// 再生状態を保つための再投入の間隔（秒）。字幕の更新時の描画とは別で、同じフレームを送るだけ
+    private static let heartbeatInterval = 1.0
+
     private var pip: AVPictureInPictureController?
     private var possibleObservation: NSKeyValueObservation?
     private var timebase: CMTimebase?
@@ -95,6 +98,8 @@ final class PiPController: NSObject {
     /// 字幕を更新する。空文字は直前の表示を維持しない（空表示になる）。
     /// isProvisional が true のときは、確定前の暫定訳として薄く描く。
     func show(original: String, translation: String, isProvisional: Bool = false) {
+        // 内容が変わっていなければ描き直さない（フレーム生成の負荷を避ける）
+        guard original != currentOriginal || translation != currentTranslation || isProvisional != currentIsProvisional else { return }
         currentOriginal = original
         currentTranslation = translation
         currentIsProvisional = isProvisional
@@ -126,10 +131,10 @@ final class PiPController: NSObject {
         displayLayer.sampleBufferRenderer.enqueue(sampleBuffer)
     }
 
-    /// PiP を再生状態に保つため、同じフレームを一定間隔で再投入する。
+    /// PiP を再生状態に保つため、同じフレームを一定間隔で再投入する（描き直しはしない）。
     private func startHeartbeat() {
         guard heartbeat == nil else { return }
-        heartbeat = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+        heartbeat = Timer.scheduledTimer(withTimeInterval: Self.heartbeatInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, let buffer = self.lastPixelBuffer else { return }
                 self.enqueue(buffer)

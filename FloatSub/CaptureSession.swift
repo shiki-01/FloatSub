@@ -80,6 +80,9 @@ final class CaptureSession {
     var logs: [String] = []
     /// 音声から字幕までの遅延の集計（詳細欄に表示）
     var latencySummary = ""
+    /// 端末の熱状態（診断表示用）
+    var thermalState = ProcessInfo.processInfo.thermalState
+    private var thermalObserver: NSObjectProtocol?
     private var latencyStats = LatencyStats()
 
     // 取り込み診断（実機での検証用）
@@ -166,7 +169,32 @@ final class CaptureSession {
                          soundRecognition: soundRecognition, fontScale: fontScale, backgroundOpacity: backgroundOpacity, textColor: textColor, glossary: glossary)
     }
 
+    /// 熱状態の表示名
+    var thermalStateText: String {
+        switch thermalState {
+        case .nominal: "正常"
+        case .fair: "やや高い"
+        case .serious: "高い（暫定訳を停止中）"
+        case .critical: "非常に高い（暫定訳を停止中）"
+        @unknown default: "不明"
+        }
+    }
+
+    /// 熱状態が高いときは、負荷の大きい暫定訳を止める。
+    private var isThermallyConstrained: Bool {
+        thermalState == .serious || thermalState == .critical
+    }
+
     init() {
+        thermalObserver = NotificationCenter.default.addObserver(
+            forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.thermalState = ProcessInfo.processInfo.thermalState
+                self.log("端末の熱状態: \(self.thermalStateText)")
+                if self.isThermallyConstrained { self.resetProvisional(); self.updatePiP() }
+            }
+        }
         let d = UserDefaults.standard
         if let v = d.string(forKey: "locale") { localeIdentifier = v }
         if let v = d.string(forKey: "target") { targetLanguageIdentifier = v }
@@ -864,7 +892,7 @@ final class CaptureSession {
 
     /// 話している途中の残りを翻訳して暫定訳にする。同時に 1 件だけ実行し、終わったら最新の残りで繰り返す。
     private func scheduleProvisional() {
-        guard showProvisional, !musicSuppressed, translator.isReady, provisionalTask == nil else { return }
+        guard showProvisional, !musicSuppressed, !isThermallyConstrained, translator.isReady, provisionalTask == nil else { return }
         provisionalTask = Task { [weak self] in await self?.runProvisionalLoop() }
     }
 
@@ -872,7 +900,8 @@ final class CaptureSession {
         defer { provisionalTask = nil }
         while !Task.isCancelled {
             let text = volatileText.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard showProvisional, text.count >= Self.provisionalMinChars, text != provisionalSource else { return }
+            guard showProvisional, !isThermallyConstrained, text.count >= Self.provisionalMinChars,
+                  text != provisionalSource else { return }
             let generation = provisionalGeneration
             let captured = volatileCaptured
             let began = ProcessInfo.processInfo.systemUptime

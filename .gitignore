@@ -10,3 +10,5 @@ FloatSubBroadcast/FloatSubBroadcast.entitlements
 *.p8
 *.p12
 *.mobileprovision
+FloatSubWidgets/Info.plist
+FloatSubWidgets/FloatSubWidgets.entitlements
