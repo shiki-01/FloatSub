@@ -22,6 +22,17 @@ struct ContentView: View {
                         .disabled(!session.isRunning)
                 }
 
+                Section("字幕 PiP") {
+                    PiPLayerView(controller: session.pip)
+                        .aspectRatio(SubtitleRenderer.size.width / SubtitleRenderer.size.height, contentMode: .fit)
+                        .listRowInsets(EdgeInsets())
+                    LabeledContent("状態", value: session.pip.status)
+                    Button(session.pip.isActive ? "PiP を終了" : "PiP を開始") {
+                        session.pip.isActive ? session.pip.stop() : session.pip.start()
+                    }
+                    .disabled(!session.pip.isPossible && !session.pip.isActive)
+                }
+
                 Section("取り込み診断") {
                     LabeledContent("拡張の接続", value: session.extensionConnected ? "接続中" : "未接続")
                     LabeledContent("受信バッファ数", value: "\(session.receivedBuffers)")
@@ -59,6 +70,7 @@ struct ContentView: View {
                 }
             }
             .navigationTitle("FloatSub")
+            .onAppear { session.pip.prepare() }
             // 言語モデルが未導入のとき、システムのダウンロード確認を出すために必要
             .translationTask(session.translationConfiguration) { translationSession in
                 await session.handleDownload(translationSession)

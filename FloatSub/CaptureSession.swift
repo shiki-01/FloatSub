@@ -30,6 +30,8 @@ final class CaptureSession {
     private let receiver = AudioReceiver()
     private let engine = TranscriptionEngine()
     private let translator = TranslationEngine()
+    /// 字幕の PiP 表示
+    let pip = PiPController()
     private var isTranslating = false
 
     private var sourceLanguage: Locale.Language {
@@ -42,6 +44,7 @@ final class CaptureSession {
     func start() async {
         guard !isRunning else { return }
         log("開始処理")
+        pip.onLog = { [weak self] msg in self?.log(msg) }
         do {
             try keepAlive.start()
             log("無音再生を開始（実行維持）")
@@ -87,6 +90,7 @@ final class CaptureSession {
         await engine.stop()
         keepAlive.stop()
         translator.reset()
+        pip.stop()
         translationConfiguration = nil
         translationStatus = "未準備"
         isRunning = false
@@ -142,6 +146,7 @@ final class CaptureSession {
                 if let i = segments.firstIndex(where: { $0.id == id }) {
                     segments[i].translation = translated
                 }
+                updatePiP()
             } catch {
                 log("翻訳に失敗: \(error.localizedDescription)")
                 // 失敗した文節は空訳にして無限ループを避ける
@@ -152,11 +157,18 @@ final class CaptureSession {
         }
     }
 
+    /// 最新の確定文節（原文と日本語訳）を PiP の字幕へ反映する。
+    private func updatePiP() {
+        guard let last = segments.last else { return }
+        pip.show(original: last.text, translation: last.translation ?? "翻訳中…")
+    }
+
     private func handleResult(_ text: String, isFinal: Bool) {
         if isFinal {
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty {
                 segments.append(TranscriptSegment(text: trimmed))
+                updatePiP()
                 Task { await flushTranslations() }
             }
             volatileText = ""
