@@ -27,11 +27,11 @@ iPhone で再生中の他アプリの音声（主に YouTube の英語ポッド�
 |---|---|
 | 音声の取り込み | ScreenCaptureKit（`SCContentSharingPicker` と `SCStream`）。フォールバックとして ReplayKit（Broadcast Upload Extension） |
 | 文字起こし | Speech framework の `SpeechAnalyzer` と `SpeechTranscriber`（端末内、途中結果を逐次出力） |
-| 翻訳 | Translation framework（端末内、確定した文節ごと） |
+| 翻訳 | Translation framework（端末内）。話している途中の暫定訳と、句読点・無音で区切った文節の確定訳 |
 | 字幕の表示 | 字幕を描画した映像フレームを `AVSampleBufferDisplayLayer` へ流し、`AVPictureInPictureController` で表示 |
 | 実行維持 | PiP の再生と、`audio` background mode による無音再生 |
 
-取り込み方式の判断の経緯は `docs/CAPTURE_DECISION.md` にあります。
+取り込み方式の判断の経緯は `docs/CAPTURE_DECISION.md`、遅延の計測は `docs/LATENCY.md` にあります。
 
 ## ディレクトリ
 
@@ -69,13 +69,14 @@ Mac に Xcode を入れず、GitHub Actions でビルドして TestFlight へ配
 
 ## 開発状況
 
-Phase 4 までは実機（iPhone 16e）で確認済み。Phase 5 は CI でのコンパイル確認までが完了しており、次の項目は実機での確認が必要。
+Phase 4 までは実機（iPhone 16e）で確認済み。Phase 5 は CI でのコンパイル確認が済んでおり、次の項目は実機での確認が必要。
 
 | 機能 | 状態 | 実機で確認する項目 |
 |---|---|---|
 | マイク入力モード | 実装済み・実機確認待ち | 初回の許可ダイアログ、拒否時の案内（設定アプリへの導線）、マイクでの文字起こしと翻訳、アプリ内字幕の表示、他アプリへ切り替えたときの PiP と実行維持、イヤホンの抜き差し後の復帰 |
 | 履歴の書き出しと削除 | 実装済み・実機確認待ち | テキスト・SRT の共有シート（ファイルアプリ、AirDrop）、SRT が動画プレーヤーで開けること、全削除後に履歴と字幕が消えること |
 | 用語の登録 | 実装済み・実機確認待ち | 登録した固有名詞が文字起こしで正しい綴りになること（登録前後の比較）、実行中に追加した用語の反映、アプリ再起動後も保持されること。`AnalysisContext` の API 名は iOS 27 SDK でのコンパイルで確認する |
+| 翻訳の高速化 | 実装済み・実機確認待ち | 暫定訳の表示と確定訳への置き換え（薄く表示されること、ちらつき）、暫定訳のオン・オフ、句読点・無音での区切りで文が重複・欠落しないこと、`docs/LATENCY.md` の手順で変更前後の遅延を計測して記入 |
 
 ## ライセンス
 

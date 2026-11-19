@@ -7,6 +7,8 @@ struct TranscriptSegment: Identifiable {
     let text: String
     /// 日本語訳。翻訳完了まで nil
     var translation: String?
+    /// 確定訳が届くまで仮に出す暫定訳（薄く表示する）
+    var provisionalTranslation: String?
     /// 音声の時間軸（取り込んだ音声の累積秒）での位置
     var audioStart = 0.0
     var audioEnd = 0.0

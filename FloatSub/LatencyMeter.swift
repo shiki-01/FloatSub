@@ -53,6 +53,8 @@ enum LatencyKind: String, CaseIterable {
     case translation = "翻訳"
     /// 確定した訳を字幕に出すまでの合計
     case caption = "字幕（確定訳）"
+    /// 話している途中の暫定訳を字幕に出すまで（起点は、その時点の途中結果の終端の音声）
+    case provisional = "字幕（暫定訳）"
 }
 
 /// 遅延の集計。直近の標本だけを保持し、平均と最大を返す。メインアクターから使う。

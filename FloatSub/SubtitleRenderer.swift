@@ -16,7 +16,8 @@ enum SubtitleRenderer {
     /// フレームの画素サイズ。PiP 小窓の縦横比（16:5 程度）に合わせる
     static let size = CGSize(width: 960, height: 300)
 
-    static func makePixelBuffer(original: String, translation: String, style: SubtitleStyle = SubtitleStyle()) -> CVPixelBuffer? {
+    static func makePixelBuffer(original: String, translation: String, isProvisional: Bool = false,
+                                       style: SubtitleStyle = SubtitleStyle()) -> CVPixelBuffer? {
         let attributes: [CFString: Any] = [
             kCVPixelBufferCGImageCompatibilityKey: true,
             kCVPixelBufferCGBitmapContextCompatibilityKey: true,
@@ -70,11 +71,13 @@ enum SubtitleRenderer {
         // 日本語訳（大きく、白）。収まるまで文字サイズを下げる
         let translationRect = CGRect(x: margin, y: translationTop, width: width, height: size.height - translationTop - 20)
         var fontSize: CGFloat = 52 * style.fontScale
+        // 暫定訳は透明度を下げて、確定訳と見分けられるようにする
+        let translationColor = UIColor.white.withAlphaComponent(isProvisional ? 0.5 : 1)
         var translationAttributes: [NSAttributedString.Key: Any] = [:]
         while fontSize >= 24 {
             translationAttributes = [
                 .font: UIFont.systemFont(ofSize: fontSize, weight: .bold),
-                .foregroundColor: UIColor.white,
+                .foregroundColor: translationColor,
                 .paragraphStyle: paragraph,
             ]
             let needed = (translation as NSString).boundingRect(

@@ -39,14 +39,35 @@ final class TranslationEngine {
         }
     }
 
-    /// 確定した文節を 1 件翻訳する。
-    func translate(_ text: String) async throws -> String {
+    /// 翻訳は 1 件ずつ直列に行う。暫定訳より確定訳を先に処理するため、待ち行列の先頭へ入れられる。
+    private var busy = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    private func acquire(urgent: Bool) async {
+        if !busy { busy = true; return }
+        await withCheckedContinuation { continuation in
+            if urgent { waiters.insert(continuation, at: 0) } else { waiters.append(continuation) }
+        }
+    }
+
+    private func release() {
+        if waiters.isEmpty { busy = false } else { waiters.removeFirst().resume() }
+    }
+
+    /// 1 件翻訳する。urgent は確定した文節用（暫定訳より優先）。
+    func translate(_ text: String, urgent: Bool = false) async throws -> String {
         guard let session else { throw EngineError.notReady }
+        await acquire(urgent: urgent)
+        defer { release() }
         let response = try await session.translate(text)
         return response.targetText
     }
 
     func reset() {
         session = nil
+        // 停止時に待たされている翻訳を解放する
+        let pending = waiters
+        waiters.removeAll()
+        pending.forEach { $0.resume() }
     }
 }

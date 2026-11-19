@@ -117,6 +117,7 @@ struct ContentView: View {
                 Text(session.displayTranslation.isEmpty ? "字幕を待っています" : session.displayTranslation)
                     .font(.system(size: 22 * session.fontScale, weight: .bold))
                     .foregroundStyle(session.displayTranslation.isEmpty ? .secondary : .primary)
+                    .opacity(session.displayIsProvisional ? 0.5 : 1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 4)
@@ -163,6 +164,7 @@ struct ContentView: View {
             Toggle("原文を表示", isOn: $session.showOriginal)
             Toggle("話している途中の原文も表示", isOn: $session.showLiveOriginal)
                 .disabled(!session.showOriginal)
+            Toggle("暫定訳を表示（薄く表示）", isOn: $session.showProvisional)
             Picker("文字サイズ", selection: $session.fontScale) {
                 Text("小").tag(0.8)
                 Text("標準").tag(1.0)
@@ -222,14 +224,15 @@ struct ContentView: View {
     private var transcriptSection: some View {
         Section("文字起こしと日本語訳") {
             if !session.volatileText.isEmpty {
-                Text(session.volatileText).foregroundStyle(.secondary)
+                Text(session.volatileText).foregroundStyle(.secondary).opacity(0.6)
             }
             // 新しい順に表示する
             ForEach(session.segments.reversed()) { segment in
                 VStack(alignment: .leading, spacing: 4) {
                     Text(segment.text).foregroundStyle(.secondary)
-                    Text(segment.translation ?? "（翻訳待ち）")
+                    Text(segment.translation ?? segment.provisionalTranslation ?? "（翻訳待ち）")
                         .font(.headline)
+                        .opacity(segment.translation == nil ? 0.5 : 1)
                 }
             }
         }

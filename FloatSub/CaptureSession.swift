@@ -57,11 +57,16 @@ final class CaptureSession {
     var showOriginal = true
     /// 話している途中の原文（確定前）も PiP に出すか
     var showLiveOriginal = false
+    /// 話している途中の訳（暫定訳）を薄く表示するか
+    var showProvisional = true
     var fontScale = 1.0
+    /// 話している途中の原文のうち、区切り（履歴へ移した部分）を除いた残り
     var volatileText = ""
     /// アプリ内の字幕表示用（PiP と同じ内容）。マイク使用時など、PiP を使わずに見る場合に使う
     var displayOriginal = ""
     var displayTranslation = ""
+    /// 表示中の訳が暫定訳（確定前）か
+    var displayIsProvisional = false
     /// マイクの権限がないとき true。ContentView が設定アプリへの案内を出す
     var microphoneDenied = false
     /// 登録した用語。文字起こしの contextual strings に渡す
@@ -95,6 +100,20 @@ final class CaptureSession {
     /// 字幕の PiP 表示
     let pip = PiPController()
     private var isTranslating = false
+    // 途中結果の処理
+    private var chunker = UtteranceChunker()
+    private var volatileFull = ""
+    private var volatileStart = 0.0
+    private var volatileEnd = 0.0
+    private var volatileCaptured: TimeInterval?
+    /// 現在の残りの先頭にあたる音声位置
+    private var restAudioStart: Double?
+    private var provisionalTask: Task<Void, Never>?
+    private var pauseTask: Task<Void, Never>?
+    private var provisionalSource = ""
+    private var provisionalTranslation = ""
+    /// 区切りや確定のたびに増やし、実行中の暫定訳の結果を捨てる目印にする
+    private var provisionalGeneration = 0
     /// 開始処理の多重実行を防ぐ（isRunning は開始完了後に立つため別に持つ）
     private var isStarting = false
 
@@ -105,13 +124,15 @@ final class CaptureSession {
         var source: CaptureSource
         var showOriginal: Bool
         var showLiveOriginal: Bool
+        var showProvisional: Bool
         var fontScale: Double
         var glossary: [String]
     }
 
     var settingsSnapshot: SettingsSnapshot {
         SettingsSnapshot(locale: localeIdentifier, target: targetLanguageIdentifier, source: captureSource,
-                         showOriginal: showOriginal, showLiveOriginal: showLiveOriginal, fontScale: fontScale, glossary: glossary)
+                         showOriginal: showOriginal, showLiveOriginal: showLiveOriginal, showProvisional: showProvisional,
+                         fontScale: fontScale, glossary: glossary)
     }
 
     init() {
@@ -122,6 +143,7 @@ final class CaptureSession {
            CaptureSource.available.contains(v) { captureSource = v }
         if d.object(forKey: "showOriginal") != nil { showOriginal = d.bool(forKey: "showOriginal") }
         showLiveOriginal = d.bool(forKey: "showLiveOriginal")
+        if d.object(forKey: "showProvisional") != nil { showProvisional = d.bool(forKey: "showProvisional") }
         if d.object(forKey: "fontScale") != nil { fontScale = d.double(forKey: "fontScale") }
         glossary = d.stringArray(forKey: "glossary") ?? []
     }
@@ -133,6 +155,7 @@ final class CaptureSession {
         d.set(captureSource.rawValue, forKey: "captureSource")
         d.set(showOriginal, forKey: "showOriginal")
         d.set(showLiveOriginal, forKey: "showLiveOriginal")
+        d.set(showProvisional, forKey: "showProvisional")
         d.set(fontScale, forKey: "fontScale")
         d.set(glossary, forKey: "glossary")
     }
@@ -148,6 +171,12 @@ final class CaptureSession {
     /// 表示設定を PiP の字幕へ反映する。
     func applySubtitleStyle() {
         pip.apply(style: SubtitleStyle(showOriginal: showOriginal, fontScale: CGFloat(fontScale)))
+        // 暫定訳を切ったときは、出ている暫定訳を捨てて確定した字幕へ戻す
+        if !showProvisional, displayIsProvisional {
+            resetProvisional()
+            for i in segments.indices { segments[i].provisionalTranslation = nil }
+            updatePiP()
+        }
     }
 
     private var sourceLanguage: Locale.Language {
@@ -266,6 +295,7 @@ final class CaptureSession {
         await engine.stop()
         keepAlive.stop()
         translator.reset()
+        cancelPartialWork()
         pip.stop()
         translationConfiguration = nil
         translationStatus = "未準備"
@@ -365,7 +395,7 @@ final class CaptureSession {
             let audioEnd = segments[index].audioEnd
             do {
                 let began = ProcessInfo.processInfo.systemUptime
-                let translated = try await translator.translate(text)
+                let translated = try await translator.translate(text, urgent: true)
                 if let i = segments.firstIndex(where: { $0.id == id }) {
                     segments[i].translation = translated
                 }
@@ -381,16 +411,40 @@ final class CaptureSession {
         }
     }
 
-    /// 最新の確定文節（原文と日本語訳）を PiP の字幕へ反映する。
+    /// 字幕として出す内容を決めて、PiP とアプリ内表示へ反映する。
+    /// 話している途中の残りに暫定訳があればそれを（薄く）出し、なければ最新の確定文節を出す。
     /// showLiveOriginal が有効なら、確定前の原文を原文欄に出す。
     private func updatePiP() {
         let last = segments.last
-        let original = (showLiveOriginal && !volatileText.isEmpty) ? volatileText : (last?.text ?? "")
-        let translation = last.map { $0.translation ?? "翻訳中…" } ?? ""
+        let rest = volatileText
+        var original: String
+        var translation: String
+        var isProvisional = false
+        if showProvisional, !rest.isEmpty, !provisionalTranslation.isEmpty {
+            original = showLiveOriginal ? rest : ""
+            translation = provisionalTranslation
+            isProvisional = true
+        } else {
+            original = (showLiveOriginal && !rest.isEmpty) ? rest : (last?.text ?? "")
+            if let last {
+                if let t = last.translation {
+                    translation = t
+                } else if showProvisional, let p = last.provisionalTranslation {
+                    // 確定訳が届くまで、直前の暫定訳を薄く出し続ける
+                    translation = p
+                    isProvisional = true
+                } else {
+                    translation = "翻訳中…"
+                }
+            } else {
+                translation = ""
+            }
+        }
         guard !original.isEmpty || !translation.isEmpty else { return }
         displayOriginal = original
         displayTranslation = translation
-        pip.show(original: original, translation: translation)
+        displayIsProvisional = isProvisional
+        pip.show(original: original, translation: translation, isProvisional: isProvisional)
     }
 
     /// 履歴の保持件数。長時間の利用でメモリが増え続けないようにする（履歴は端末のメモリ上だけに持つ）。
@@ -399,49 +453,185 @@ final class CaptureSession {
     /// 履歴をすべて削除する。表示中の字幕と、書き出しで作った一時ファイルも消す。
     func clearHistory() {
         segments.removeAll()
-        volatileText = ""
+        resetProvisional()
         displayOriginal = ""
         displayTranslation = ""
+        displayIsProvisional = false
         pip.show(original: "", translation: "字幕を待っています")
         HistoryExporter.removeTemporaryFiles()
         log("履歴を削除しました")
     }
 
     /// 確定訳を字幕へ出した時点の遅延を記録する（音声が届いてから表示までの合計と、翻訳単体の時間）。
-    private func recordCaptionLatency(audioEnd: Double, translationBegan: TimeInterval) {
+    /// translationBegan が nil のときは、暫定訳の再利用などで翻訳を行っていない。
+    private func recordCaptionLatency(audioEnd: Double, translationBegan: TimeInterval?) {
         let now = ProcessInfo.processInfo.systemUptime
-        let translation = now - translationBegan
-        latencyStats.add(.translation, seconds: translation)
+        var detail = "（暫定訳を再利用）"
+        if let translationBegan {
+            let translation = now - translationBegan
+            latencyStats.add(.translation, seconds: translation)
+            detail = String(format: "（うち翻訳 %.2f 秒）", translation)
+        }
         guard let captured = engine.timeline.uptime(atAudio: audioEnd) else { return }
         let total = now - captured
         latencyStats.add(.caption, seconds: total)
         latencySummary = latencyStats.summary
-        log(String(format: "遅延 字幕（確定訳）%.2f 秒（うち翻訳 %.2f 秒）", total, translation))
+        log(String(format: "遅延 字幕（確定訳）%.2f 秒", total) + detail)
+    }
+
+    // MARK: - 途中結果の処理（区切りと暫定訳）
+
+    /// 暫定訳を作る最小の文字数と、翻訳を始める最小の間隔
+    private static let provisionalMinChars = 4
+    private static let provisionalInterval = 0.25
+    /// 途中結果がこの時間変わらなければ、無音とみなして残りを区切る
+    private static let pauseCommit = Duration.milliseconds(700)
+
+    /// 履歴へ文節を追加する。reuse の訳（暫定訳）が同じ原文のものなら、翻訳を省いてそのまま確定訳にする。
+    private func appendSegment(text: String, start: Double, end: Double) {
+        var segment = TranscriptSegment(text: text, audioStart: start, audioEnd: end)
+        if showProvisional, !provisionalTranslation.isEmpty {
+            if provisionalSource == text {
+                segment.translation = provisionalTranslation
+            } else {
+                segment.provisionalTranslation = provisionalTranslation
+            }
+        }
+        segments.append(segment)
+        if segments.count > Self.maxSegments {
+            segments.removeFirst(segments.count - Self.maxSegments)
+        }
+        // この区切りに対する暫定訳は役目を終えた。実行中の暫定訳の結果も捨てる
+        resetProvisional()
+        if segment.translation != nil {
+            recordCaptionLatency(audioEnd: end, translationBegan: nil)
+        }
+    }
+
+    private func resetProvisional() {
+        provisionalGeneration += 1
+        provisionalSource = ""
+        provisionalTranslation = ""
+    }
+
+    /// 途中結果から、文末で閉じた部分を確定扱いにして履歴へ移す。
+    private func commitReadyChunks() {
+        while true {
+            let rest = chunker.rest(of: volatileFull)
+            guard let chunk = chunker.readyChunk(in: rest) else { return }
+            commit(chunk, of: rest)
+        }
+    }
+
+    /// rest の先頭 chunk を区切りとして履歴へ移す。音声の時刻は、文字数の比で按分する。
+    private func commit(_ chunk: String, of rest: String) {
+        let start = restAudioStart ?? volatileStart
+        let ratio = Double(chunk.count) / Double(max(rest.count, 1))
+        let end = start + max(0, volatileEnd - start) * min(ratio, 1)
+        chunker.commit(chunk)
+        restAudioStart = end
+        appendSegment(text: chunk, start: start, end: end)
+        volatileText = chunker.rest(of: volatileFull)
+        updatePiP()
+        Task { await flushTranslations() }
+    }
+
+    /// 途中結果が一定時間変わらなかったとき、残りを 1 つの区切りにする。
+    private func schedulePauseCommit() {
+        pauseTask?.cancel()
+        pauseTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.pauseCommit)
+            guard !Task.isCancelled, let self else { return }
+            let rest = self.chunker.rest(of: self.volatileFull)
+            guard let chunk = self.chunker.pauseChunk(in: rest) else { return }
+            self.commit(chunk, of: rest)
+        }
+    }
+
+    /// 話している途中の残りを翻訳して暫定訳にする。同時に 1 件だけ実行し、終わったら最新の残りで繰り返す。
+    private func scheduleProvisional() {
+        guard showProvisional, translator.isReady, provisionalTask == nil else { return }
+        provisionalTask = Task { [weak self] in await self?.runProvisionalLoop() }
+    }
+
+    private func runProvisionalLoop() async {
+        defer { provisionalTask = nil }
+        while !Task.isCancelled {
+            let text = volatileText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard showProvisional, text.count >= Self.provisionalMinChars, text != provisionalSource else { return }
+            let generation = provisionalGeneration
+            let captured = volatileCaptured
+            let began = ProcessInfo.processInfo.systemUptime
+            do {
+                let translated = try await translator.translate(text)
+                // 待っている間に区切りや確定があった場合、この訳は古いので捨てる
+                if generation == provisionalGeneration {
+                    provisionalSource = text
+                    provisionalTranslation = translated
+                    updatePiP()
+                    if let captured {
+                        let latency = ProcessInfo.processInfo.systemUptime - captured
+                        latencyStats.add(.provisional, seconds: latency)
+                        latencySummary = latencyStats.summary
+                    }
+                }
+            } catch {
+                log("暫定訳の翻訳に失敗: \(error.localizedDescription)")
+                return
+            }
+            let elapsed = ProcessInfo.processInfo.systemUptime - began
+            if elapsed < Self.provisionalInterval {
+                try? await Task.sleep(for: .seconds(Self.provisionalInterval - elapsed))
+            }
+        }
+    }
+
+    private func cancelPartialWork() {
+        pauseTask?.cancel()
+        pauseTask = nil
+        provisionalTask?.cancel()
+        provisionalTask = nil
+        resetProvisional()
+        chunker.reset()
+        restAudioStart = nil
+        volatileFull = ""
+        volatileText = ""
     }
 
     private func handleResult(_ result: TranscriptionResult) {
-        let text = result.text
-        let isFinal = result.isFinal
-        if isFinal {
+        let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if result.isFinal {
+            pauseTask?.cancel()
             if let captured = result.capturedUptime {
                 let recognition = result.receivedUptime - captured
                 latencyStats.add(.recognition, seconds: recognition)
                 log(String(format: "遅延 認識（確定）%.2f 秒", recognition))
             }
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                segments.append(TranscriptSegment(text: trimmed, audioStart: result.audioStart, audioEnd: result.audioEnd))
-                if segments.count > Self.maxSegments {
-                    segments.removeFirst(segments.count - Self.maxSegments)
-                }
-                volatileText = ""
+            // 区切り済みの部分を除いた残りだけを、最後の文節にする
+            let remainder = chunker.rest(of: text)
+            let start = restAudioStart ?? result.audioStart
+            chunker.reset()
+            restAudioStart = nil
+            volatileFull = ""
+            volatileText = ""
+            if !remainder.isEmpty {
+                appendSegment(text: remainder, start: start, end: max(result.audioEnd, start))
                 updatePiP()
                 Task { await flushTranslations() }
+            } else {
+                resetProvisional()
             }
-            volatileText = ""
         } else {
-            volatileText = text
-            if showLiveOriginal { updatePiP() }
+            volatileFull = text
+            volatileStart = result.audioStart
+            volatileEnd = result.audioEnd
+            volatileCaptured = result.capturedUptime
+            if restAudioStart == nil { restAudioStart = result.audioStart }
+            commitReadyChunks()
+            volatileText = chunker.rest(of: text)
+            scheduleProvisional()
+            schedulePauseCommit()
+            if showLiveOriginal || showProvisional { updatePiP() }
         }
     }
 

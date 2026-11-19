@@ -24,6 +24,7 @@ final class PiPController: NSObject {
     private var lastPixelBuffer: CVPixelBuffer?
     private var currentOriginal = ""
     private var currentTranslation = "字幕を待っています"
+    private var currentIsProvisional = false
     private var style = SubtitleStyle()
 
     override init() {
@@ -92,9 +93,11 @@ final class PiPController: NSObject {
     // MARK: - 字幕の更新
 
     /// 字幕を更新する。空文字は直前の表示を維持しない（空表示になる）。
-    func show(original: String, translation: String) {
+    /// isProvisional が true のときは、確定前の暫定訳として薄く描く。
+    func show(original: String, translation: String, isProvisional: Bool = false) {
         currentOriginal = original
         currentTranslation = translation
+        currentIsProvisional = isProvisional
         render()
     }
 
@@ -107,7 +110,8 @@ final class PiPController: NSObject {
 
     private func render() {
         guard let pixelBuffer = SubtitleRenderer.makePixelBuffer(
-            original: currentOriginal, translation: currentTranslation, style: style) else { return }
+            original: currentOriginal, translation: currentTranslation,
+            isProvisional: currentIsProvisional, style: style) else { return }
         lastPixelBuffer = pixelBuffer
         enqueue(pixelBuffer)
     }
