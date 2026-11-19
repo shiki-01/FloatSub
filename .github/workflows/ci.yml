@@ -8,11 +8,12 @@ on:
 env:
   BUNDLE_ID_PREFIX: ${{ vars.BUNDLE_ID_PREFIX || 'com.example' }}
   DEVELOPMENT_TEAM: ${{ vars.DEVELOPMENT_TEAM || 'XXXXXXXXXX' }}
-  IOS_DEPLOYMENT_TARGET: ${{ matrix.target }}
 
 jobs:
   compile:
     runs-on: ${{ matrix.runner }}
+    env:
+      IOS_DEPLOYMENT_TARGET: ${{ matrix.target }}
     strategy:
       fail-fast: false
       matrix:
