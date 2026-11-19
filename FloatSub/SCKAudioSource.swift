@@ -9,6 +9,7 @@ import ScreenCaptureKit
 /// 実機検証（iOS 27）で、他アプリの音声が 48kHz mono Float32 で届くことを確認済み。
 /// 経路: SCContentSharingPicker で共有対象を選択 → SCContentFilter → SCStream（capturesAudio）→ .audio 出力。
 /// iOS 27 SDK 専用のため、ScreenCaptureKit を import できない SDK ではコンパイルされない。
+@available(iOS 27.0, *)
 final class SCKAudioSource: NSObject, SCStreamOutput, SCStreamDelegate, SCContentSharingPickerObserver, @unchecked Sendable {
     /// 受信した音声（SCK のキューから呼ばれる）
     var onBuffer: ((AVAudioPCMBuffer) -> Void)?

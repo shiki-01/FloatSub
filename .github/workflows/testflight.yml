@@ -16,7 +16,7 @@ on:
 env:
   BUNDLE_ID_PREFIX: ${{ vars.BUNDLE_ID_PREFIX }}
   DEVELOPMENT_TEAM: ${{ vars.DEVELOPMENT_TEAM }}
-  IOS_DEPLOYMENT_TARGET: '27.0'
+  IOS_DEPLOYMENT_TARGET: '26.0'
 
 jobs:
   testflight:

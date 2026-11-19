@@ -19,13 +19,12 @@ enum CaptureSource: String, CaseIterable, Identifiable {
         }
     }
 
-    /// 現在の SDK で使える方式（ScreenCaptureKit は iOS 27 SDK のみ）
+    /// 現在の SDK と OS で使える方式。ScreenCaptureKit は iOS 27 以降のみで、iOS 26 では ReplayKit（拡張）が画面共有の取り込み方式になる。
     static var available: [CaptureSource] {
         #if canImport(ScreenCaptureKit)
-        [.screenCaptureKit, .replayKit, .microphone]
-        #else
-        [.replayKit, .microphone]
+        if #available(iOS 27.0, *) { return [.screenCaptureKit, .replayKit, .microphone] }
         #endif
+        return [.replayKit, .microphone]
     }
 
     static var preferred: CaptureSource { available[0] }
@@ -36,7 +35,7 @@ enum CaptureError: LocalizedError {
     case microphoneDenied
     var errorDescription: String? {
         switch self {
-        case .unsupported: "この SDK では ScreenCaptureKit を利用できません"
+        case .unsupported: "この OS・SDK では ScreenCaptureKit を利用できません（iOS 26 では ReplayKit を使います）"
         case .microphoneDenied: "マイクの使用が許可されていません"
         }
     }
@@ -102,7 +101,16 @@ final class CaptureSession {
     private let receiver = AudioReceiver()
     private let micSource = MicrophoneAudioSource()
     #if canImport(ScreenCaptureKit)
-    private let sckSource = SCKAudioSource()
+    /// iOS 27 以降でのみ生成する ScreenCaptureKit の取り込み（型が iOS 27 限定のため Any で保持する）
+    private var sckSourceStorage: Any?
+
+    @available(iOS 27.0, *)
+    private var sckSource: SCKAudioSource {
+        if let source = sckSourceStorage as? SCKAudioSource { return source }
+        let source = SCKAudioSource()
+        sckSourceStorage = source
+        return source
+    }
     #endif
     private let engine = TranscriptionEngine()
     private let translator = TranslationEngine()
@@ -487,7 +495,7 @@ final class CaptureSession {
         receiver.stop()
         micSource.stop()
         #if canImport(ScreenCaptureKit)
-        await sckSource.stop()
+        if #available(iOS 27.0, *) { await sckSource.stop() }
         #endif
         captureStatus = "停止"
         await engine.stop()
@@ -540,6 +548,7 @@ final class CaptureSession {
     /// 共有ピッカーで共有対象（画面全体）を選んでもらい、音声の取り込みを開始する。
     private func startScreenCaptureKit(_ handler: @escaping (AVAudioPCMBuffer) -> Void) async throws {
         #if canImport(ScreenCaptureKit)
+        guard #available(iOS 27.0, *) else { throw CaptureError.unsupported }
         sckSource.onBuffer = handler
         sckSource.onEvent = { [weak self] msg in
             Task { @MainActor in

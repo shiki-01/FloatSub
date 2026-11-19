@@ -25,10 +25,10 @@ jobs:
             runner: macos-26
             target: '26.0'
             conditions: ''
-          # iOS 27 SDK（xcode-27 ランナーはプレビュー提供）
+          # iOS 27 SDK で最低 OS を 26.0 にした配信と同じ構成（ScreenCaptureKit は iOS 27 の実行時のみ使う）
           - name: sdk27
             runner: xcode-27
-            target: '27.0'
+            target: '26.0'
             conditions: ''
           # iOS 27 SDK で ScreenCaptureKit 検証プローブをビルド
           - name: sdk27-sck-probe

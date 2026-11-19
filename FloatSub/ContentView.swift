@@ -367,8 +367,10 @@ struct ContentView: View {
                 }
 
                 #if SCK_PROBE && canImport(ScreenCaptureKit)
-                Button("ScreenCaptureKit 検証（30 秒）") {
-                    Task { probeReport = await SCKProbe().run() }
+                if #available(iOS 27.0, *) {
+                    Button("ScreenCaptureKit 検証（30 秒）") {
+                        Task { probeReport = await SCKProbe().run() }
+                    }
                 }
                 if !probeReport.isEmpty { Text(probeReport).font(.caption.monospaced()) }
                 #endif

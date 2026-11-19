@@ -10,6 +10,7 @@ import UIKit
 /// → SCStream（capturesAudio）→ .audio 出力。
 /// 途中でストリームが停止しても、受信数・停止理由・アプリの前面/背面遷移を時刻つきで報告する。
 /// SCK_PROBE ビルド条件のときのみコンパイルされる（通常ビルドには影響しない）。
+@available(iOS 27.0, *)
 final class SCKProbe: NSObject, SCStreamOutput, SCStreamDelegate, SCContentSharingPickerObserver, @unchecked Sendable {
     private var stream: SCStream?
     private let queue = DispatchQueue(label: "floatsub.sckprobe")
