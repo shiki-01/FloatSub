@@ -8,6 +8,10 @@ on:
         description: ScreenCaptureKit 検証ボタンを含める
         type: boolean
         default: true
+      revoke_stale_certs:
+        description: 配信の前に、CI が API 経由で作った開発用証明書（Created via API）をすべて失効させる
+        type: boolean
+        default: false
 
 env:
   BUNDLE_ID_PREFIX: ${{ vars.BUNDLE_ID_PREFIX }}
@@ -110,6 +114,37 @@ jobs:
                   print(" 登録あり" if need in have else " 未登録", need)
           st, profs = get("/v1/profiles?limit=200")
           print("プロファイル HTTP", st, "件数:", len(profs["data"]) if profs else "-")
+          PY
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      - name: CI が作った開発用証明書の失効（手動入力で有効にしたときだけ）
+        if: ${{ inputs.revoke_stale_certs }}
+        run: |
+          # 配信のたびに Xcode が開発用証明書を API 経由で作り、秘密鍵はランナーごと消えるため、証明書が積み上がる。
+          # 上限に達すると署名できなくなるので、「Apple Development: Created via API」だけを失効させる（Developer ID などは触らない）。
+          "$RUNNER_TEMP/venv/bin/python" - <<'PY'
+          import os, time, json, urllib.request, urllib.error, jwt
+          kid = os.environ["ASC_KEY_ID"]; iss = os.environ["ASC_ISSUER_ID"]
+          pem = open(os.path.join(os.environ["RUNNER_TEMP"], "keys", f"AuthKey_{kid}.p8")).read()
+          now = int(time.time())
+          token = jwt.encode({"iss": iss, "iat": now, "exp": now + 600, "aud": "appstoreconnect-v1"},
+                             pem, algorithm="ES256", headers={"kid": kid, "typ": "JWT"})
+          def call(method, path):
+              r = urllib.request.Request("https://api.appstoreconnect.apple.com" + path, method=method,
+                                         headers={"Authorization": f"Bearer {token}"})
+              with urllib.request.urlopen(r, timeout=30) as resp:
+                  body = resp.read()
+                  return resp.status, (json.loads(body) if body else None)
+          _, certs = call("GET", "/v1/certificates?limit=200&filter[certificateType]=DEVELOPMENT")
+          targets = [c for c in certs["data"] if "Created via API" in (c["attributes"].get("name") or "")]
+          print("失効の対象:", len(targets), "件（DEVELOPMENT かつ Created via API のみ）")
+          for c in targets:
+              try:
+                  st, _ = call("DELETE", f"/v1/certificates/{c['id']}")
+                  print("  失効", c["id"], c["attributes"].get("expirationDate"), "HTTP", st)
+              except urllib.error.HTTPError as e:
+                  print("  失敗", c["id"], "HTTP", e.code)
           PY
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
