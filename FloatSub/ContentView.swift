@@ -153,6 +153,10 @@ struct ContentView: View {
                 LabeledContent("受信バッファ数", value: "\(session.receivedBuffers)")
                 LabeledContent("サンプルレート", value: String(format: "%.0f Hz", session.receivedSampleRate))
                 ProgressView(value: min(Double(session.level) * 8, 1)) { Text("音声レベル (RMS)") }
+                if !session.latencySummary.isEmpty {
+                    Text("音声から字幕までの遅延")
+                    Text(session.latencySummary).font(.caption.monospaced()).textSelection(.enabled)
+                }
 
                 #if SCK_PROBE && canImport(ScreenCaptureKit)
                 Button("ScreenCaptureKit 検証（30 秒）") {

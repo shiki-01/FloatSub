@@ -7,12 +7,28 @@ struct TranscriptSegment: Identifiable {
     let text: String
     /// 日本語訳。翻訳完了まで nil
     var translation: String?
+    /// 音声の時間軸（取り込んだ音声の累積秒）での位置
+    var audioStart = 0.0
+    var audioEnd = 0.0
+}
+
+/// 文字起こしの 1 結果。途中結果（volatile）と確定結果の両方に使う。
+struct TranscriptionResult {
+    let text: String
+    let isFinal: Bool
+    /// この結果が覆う音声の範囲（音声の時間軸、秒）
+    let audioStart: Double
+    let audioEnd: Double
+    /// audioEnd の音声を文字起こしへ流し込んだ時刻（systemUptime）。遅延の計測に使う
+    let capturedUptime: TimeInterval?
+    /// 結果を受け取った時刻（systemUptime）
+    let receivedUptime: TimeInterval
 }
 
 /// SpeechAnalyzer / SpeechTranscriber による端末内ストリーミング文字起こし。
 final class TranscriptionEngine {
     /// 途中結果（volatile）。確定すると isFinal = true で届く
-    var onResult: ((String, Bool) -> Void)?
+    var onResult: ((TranscriptionResult) -> Void)?
     var onLog: ((String) -> Void)?
     /// 結果の受信が異常終了したとき（文字起こしが続行できない）
     var onFailure: ((Error) -> Void)?
@@ -23,6 +39,8 @@ final class TranscriptionEngine {
     private var analyzerFormat: AVAudioFormat?
     private var converter: AVAudioConverter?
     private var converterInputFormat: AVAudioFormat?
+    /// 音声の時間軸と実時刻の対応（遅延の計測用）
+    let timeline = AudioTimeline()
 
     /// 実行時の対応可否判定。
     /// 指示書の supportsDevice 相当。iOS 26 の SDK では SpeechTranscriber.isAvailable が該当する。
@@ -49,6 +67,7 @@ final class TranscriptionEngine {
         analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber])
         onLog?("analyzer 入力形式: \(analyzerFormat.map { "\($0.sampleRate)Hz \($0.channelCount)ch \($0.commonFormat.rawValue)" } ?? "不明")")
 
+        timeline.reset()
         let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
         self.continuation = continuation
         self.analyzer = analyzer
@@ -56,7 +75,16 @@ final class TranscriptionEngine {
         resultsTask = Task { [weak self] in
             do {
                 for try await result in transcriber.results {
-                    self?.onResult?(String(result.text.characters), result.isFinal)
+                    guard let self else { break }
+                    let received = ProcessInfo.processInfo.systemUptime
+                    let start = result.range.start.seconds
+                    let end = result.range.end.seconds
+                    let audioStart = start.isFinite ? start : 0
+                    let audioEnd = end.isFinite ? end : audioStart
+                    self.onResult?(TranscriptionResult(
+                        text: String(result.text.characters), isFinal: result.isFinal,
+                        audioStart: audioStart, audioEnd: audioEnd,
+                        capturedUptime: self.timeline.uptime(atAudio: audioEnd), receivedUptime: received))
                 }
             } catch {
                 self?.onLog?("文字起こしエラー: \(error.localizedDescription)")
@@ -86,6 +114,7 @@ final class TranscriptionEngine {
             return buffer
         }
         guard error == nil, out.frameLength > 0 else { return }
+        timeline.recordFed(seconds: Double(out.frameLength) / target.sampleRate)
         continuation.yield(AnalyzerInput(buffer: out))
     }
 

@@ -53,6 +53,9 @@ final class CaptureSession {
     var volatileText = ""
     var segments: [TranscriptSegment] = []
     var logs: [String] = []
+    /// 音声から字幕までの遅延の集計（詳細欄に表示）
+    var latencySummary = ""
+    private var latencyStats = LatencyStats()
 
     // 取り込み診断（実機での検証用）
     var extensionConnected = false
@@ -148,9 +151,11 @@ final class CaptureSession {
                     self.captureStatus = "文字起こしが停止しました"
                 }
             }
-            engine.onResult = { [weak self] text, isFinal in
-                Task { @MainActor in self?.handleResult(text, isFinal: isFinal) }
+            engine.onResult = { [weak self] result in
+                Task { @MainActor in self?.handleResult(result) }
             }
+            latencyStats.reset()
+            latencySummary = ""
             try await engine.start(localeIdentifier: localeIdentifier)
             log("文字起こし準備完了 (\(localeIdentifier))")
 
@@ -283,12 +288,15 @@ final class CaptureSession {
         while let index = segments.firstIndex(where: { $0.translation == nil }) {
             let id = segments[index].id
             let text = segments[index].text
+            let audioEnd = segments[index].audioEnd
             do {
+                let began = ProcessInfo.processInfo.systemUptime
                 let translated = try await translator.translate(text)
                 if let i = segments.firstIndex(where: { $0.id == id }) {
                     segments[i].translation = translated
                 }
                 updatePiP()
+                recordCaptionLatency(audioEnd: audioEnd, translationBegan: began)
             } catch {
                 log("翻訳に失敗: \(error.localizedDescription)")
                 // 失敗した文節は空訳にして無限ループを避ける
@@ -312,11 +320,30 @@ final class CaptureSession {
     /// 履歴の保持件数。長時間の利用でメモリが増え続けないようにする。
     private static let maxSegments = 300
 
-    private func handleResult(_ text: String, isFinal: Bool) {
+    /// 確定訳を字幕へ出した時点の遅延を記録する（音声が届いてから表示までの合計と、翻訳単体の時間）。
+    private func recordCaptionLatency(audioEnd: Double, translationBegan: TimeInterval) {
+        let now = ProcessInfo.processInfo.systemUptime
+        let translation = now - translationBegan
+        latencyStats.add(.translation, seconds: translation)
+        guard let captured = engine.timeline.uptime(atAudio: audioEnd) else { return }
+        let total = now - captured
+        latencyStats.add(.caption, seconds: total)
+        latencySummary = latencyStats.summary
+        log(String(format: "遅延 字幕（確定訳）%.2f 秒（うち翻訳 %.2f 秒）", total, translation))
+    }
+
+    private func handleResult(_ result: TranscriptionResult) {
+        let text = result.text
+        let isFinal = result.isFinal
         if isFinal {
+            if let captured = result.capturedUptime {
+                let recognition = result.receivedUptime - captured
+                latencyStats.add(.recognition, seconds: recognition)
+                log(String(format: "遅延 認識（確定）%.2f 秒", recognition))
+            }
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty {
-                segments.append(TranscriptSegment(text: trimmed))
+                segments.append(TranscriptSegment(text: trimmed, audioStart: result.audioStart, audioEnd: result.audioEnd))
                 if segments.count > Self.maxSegments {
                     segments.removeFirst(segments.count - Self.maxSegments)
                 }
