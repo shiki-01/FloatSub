@@ -95,11 +95,9 @@ final class SCKAudioSource: NSObject, SCStreamOutput, SCStreamDelegate, SCConten
         lock.unlock()
         if waiting {
             resumePicker(with: .success(filter))
-        } else if let current = self.stream {
-            // 取り込み中に共有対象を選び直したとき
-            current.updateContentFilter(filter) { [weak self] error in
-                if let error { self?.onEvent?("共有対象の更新に失敗: \(error.localizedDescription)") }
-            }
+        } else {
+            // SCStream.updateContentFilter は iOS では利用できないため、取り込み中の選び直しは反映しない
+            onEvent?("取り込み中の共有対象の変更は反映されません。一度停止して開始し直してください")
         }
     }
 
