@@ -18,6 +18,7 @@ struct ContentView: View {
                 inputSection
                 if session.captureSource == .microphone { liveSubtitleSection }
                 languageSection
+                glossarySection
                 subtitleSection
                 pipSection
                 historySection
@@ -38,6 +39,7 @@ struct ContentView: View {
             .onChange(of: session.settingsSnapshot) {
                 session.saveSettings()
                 session.applySubtitleStyle()
+                session.updateGlossary()
             }
             // 翻訳先を変えたら、翻訳できる原語だけに絞り直す
             .onChange(of: session.targetLanguageIdentifier) {
@@ -142,6 +144,18 @@ struct ContentView: View {
             }
         }
         .disabled(session.isRunning)
+    }
+
+    private var glossarySection: some View {
+        Section {
+            NavigationLink {
+                GlossaryView(session: session)
+            } label: {
+                LabeledContent("用語の登録", value: "\(session.glossary.count) 件")
+            }
+        } footer: {
+            Text("固有名詞や専門用語を登録すると、文字起こしの精度が上がります。")
+        }
     }
 
     private var subtitleSection: some View {

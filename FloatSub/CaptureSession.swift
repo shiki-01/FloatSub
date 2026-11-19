@@ -64,6 +64,9 @@ final class CaptureSession {
     var displayTranslation = ""
     /// マイクの権限がないとき true。ContentView が設定アプリへの案内を出す
     var microphoneDenied = false
+    /// 登録した用語。文字起こしの contextual strings に渡す
+    var glossary: [String] = []
+    private var appliedGlossary: [String] = []
     var segments: [TranscriptSegment] = []
     var logs: [String] = []
     /// 音声から字幕までの遅延の集計（詳細欄に表示）
@@ -103,11 +106,12 @@ final class CaptureSession {
         var showOriginal: Bool
         var showLiveOriginal: Bool
         var fontScale: Double
+        var glossary: [String]
     }
 
     var settingsSnapshot: SettingsSnapshot {
         SettingsSnapshot(locale: localeIdentifier, target: targetLanguageIdentifier, source: captureSource,
-                         showOriginal: showOriginal, showLiveOriginal: showLiveOriginal, fontScale: fontScale)
+                         showOriginal: showOriginal, showLiveOriginal: showLiveOriginal, fontScale: fontScale, glossary: glossary)
     }
 
     init() {
@@ -119,6 +123,7 @@ final class CaptureSession {
         if d.object(forKey: "showOriginal") != nil { showOriginal = d.bool(forKey: "showOriginal") }
         showLiveOriginal = d.bool(forKey: "showLiveOriginal")
         if d.object(forKey: "fontScale") != nil { fontScale = d.double(forKey: "fontScale") }
+        glossary = d.stringArray(forKey: "glossary") ?? []
     }
 
     func saveSettings() {
@@ -129,6 +134,15 @@ final class CaptureSession {
         d.set(showOriginal, forKey: "showOriginal")
         d.set(showLiveOriginal, forKey: "showLiveOriginal")
         d.set(fontScale, forKey: "fontScale")
+        d.set(glossary, forKey: "glossary")
+    }
+
+    /// 実行中に用語を変えたとき、認識へ反映する。
+    func updateGlossary() {
+        guard isRunning, glossary != appliedGlossary else { return }
+        let terms = glossary
+        appliedGlossary = terms
+        Task { await engine.updateGlossary(terms) }
     }
 
     /// 表示設定を PiP の字幕へ反映する。
@@ -175,7 +189,8 @@ final class CaptureSession {
             }
             latencyStats.reset()
             latencySummary = ""
-            try await engine.start(localeIdentifier: localeIdentifier)
+            appliedGlossary = glossary
+            try await engine.start(localeIdentifier: localeIdentifier, glossary: glossary)
             log("文字起こし準備完了 (\(localeIdentifier))")
 
             let handler = makeBufferHandler()
