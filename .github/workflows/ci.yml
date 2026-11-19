@@ -8,18 +8,29 @@ on:
 env:
   BUNDLE_ID_PREFIX: ${{ vars.BUNDLE_ID_PREFIX || 'com.example' }}
   DEVELOPMENT_TEAM: ${{ vars.DEVELOPMENT_TEAM || 'XXXXXXXXXX' }}
+  IOS_DEPLOYMENT_TARGET: ${{ matrix.target }}
 
 jobs:
   compile:
-    runs-on: macos-26
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: main
+          # 基準線: 一般提供の macOS 26 イメージ（iOS 26.5 SDK）
+          - name: sdk26
+            runner: macos-26
+            target: '26.0'
             conditions: ''
-          # ScreenCaptureKit が iOS 27 SDK でコンパイル可能かの確認（実行可否は実機で確認する）
-          - name: sck-probe
+          # iOS 27 SDK（xcode-27 ランナーはプレビュー提供）
+          - name: sdk27
+            runner: xcode-27
+            target: '27.0'
+            conditions: ''
+          # iOS 27 SDK で ScreenCaptureKit 検証プローブをビルド
+          - name: sdk27-sck-probe
+            runner: xcode-27
+            target: '27.0'
             conditions: 'SCK_PROBE'
     name: compile (${{ matrix.name }})
     steps:
