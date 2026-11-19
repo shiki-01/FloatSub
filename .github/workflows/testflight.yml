@@ -12,6 +12,8 @@ on:
 env:
   BUNDLE_ID_PREFIX: ${{ vars.BUNDLE_ID_PREFIX }}
   DEVELOPMENT_TEAM: ${{ vars.DEVELOPMENT_TEAM }}
+  # iOS 27 SDK の可否確認後に xcode-27 / 27.0 へ切り替える
+  IOS_DEPLOYMENT_TARGET: '26.0'
 
 jobs:
   testflight:
