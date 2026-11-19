@@ -77,6 +77,36 @@ jobs:
                   print("期待する Bundle ID が存在:", expected in ids)
           except urllib.error.HTTPError as e:
               print("HTTP", e.code, "（401: Key ID / Issuer ID / p8 の不一致、403: 権限不足）"); raise SystemExit(1)
+
+          # 署名（provisioning）に必要な権限と、Bundle ID / 機能の登録状況を確認する
+          def get(path):
+              r = urllib.request.Request("https://api.appstoreconnect.apple.com" + path,
+                                         headers={"Authorization": f"Bearer {token}"})
+              try:
+                  with urllib.request.urlopen(r, timeout=30) as resp:
+                      return resp.status, json.load(resp)
+              except urllib.error.HTTPError as e:
+                  return e.code, None
+          prefix = os.environ["BUNDLE_ID_PREFIX"]
+          st, certs = get("/v1/certificates?limit=200")
+          if certs:
+              print("証明書 HTTP", st, "種別:", sorted({c["attributes"].get("certificateType") for c in certs["data"]}))
+          else:
+              print("証明書 HTTP", st, "（403 ならキーの権限が Admin / App Manager 未満の可能性）")
+          st, bids = get("/v1/bundleIds?limit=200")
+          print("Bundle ID 一覧 HTTP", st)
+          if bids:
+              for b in bids["data"]:
+                  ident = b["attributes"].get("identifier", "")
+                  if ident.startswith(prefix + ".floatsub"):
+                      st2, caps = get(f"/v1/bundleIds/{b['id']}/bundleIdCapabilities")
+                      kinds = sorted(c["attributes"].get("capabilityType") for c in caps["data"]) if caps else f"HTTP {st2}"
+                      print(" ", ident, "→ 機能:", kinds)
+              have = {b["attributes"].get("identifier") for b in bids["data"]}
+              for need in (prefix + ".floatsub", prefix + ".floatsub.broadcast"):
+                  print(" 登録あり" if need in have else " 未登録", need)
+          st, profs = get("/v1/profiles?limit=200")
+          print("プロファイル HTTP", st, "件数:", len(profs["data"]) if profs else "-")
           PY
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
