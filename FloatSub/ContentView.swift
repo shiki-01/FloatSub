@@ -6,6 +6,10 @@ struct ContentView: View {
     @State private var session = CaptureSession()
     @State private var probeReport = ""
 
+    private var startTitle: String {
+        session.captureSource == .replayKit ? "1. 受信と文字起こしを開始" : "開始（共有対象を選択）"
+    }
+
     var body: some View {
         NavigationStack {
             List {
@@ -15,11 +19,21 @@ struct ContentView: View {
                         Text("English (UK)").tag("en-GB")
                     }
                     .disabled(session.isRunning)
-                    Button(session.isRunning ? "停止" : "1. 受信と文字起こしを開始") {
+                    Picker("取り込み方式", selection: $session.captureSource) {
+                        ForEach(CaptureSource.available) { Text($0.title).tag($0) }
+                    }
+                    .disabled(session.isRunning)
+                    Button(session.isRunning ? "停止" : startTitle) {
                         Task { session.isRunning ? await session.stop() : await session.start() }
                     }
-                    BroadcastStartButton()
-                        .disabled(!session.isRunning)
+                    if session.captureSource == .replayKit {
+                        BroadcastStartButton()
+                            .disabled(!session.isRunning)
+                    } else if !session.isRunning {
+                        Text("開始すると共有ピッカーが開きます。画面全体の共有を開始し、YouTube などで音声を再生してください。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Section("字幕 PiP") {
@@ -34,7 +48,10 @@ struct ContentView: View {
                 }
 
                 Section("取り込み診断") {
-                    LabeledContent("拡張の接続", value: session.extensionConnected ? "接続中" : "未接続")
+                    LabeledContent("取り込み状態", value: session.captureStatus)
+                    if session.captureSource == .replayKit {
+                        LabeledContent("拡張の接続", value: session.extensionConnected ? "接続中" : "未接続")
+                    }
                     LabeledContent("受信バッファ数", value: "\(session.receivedBuffers)")
                     LabeledContent("サンプルレート", value: String(format: "%.0f Hz", session.receivedSampleRate))
                     ProgressView(value: min(Double(session.level) * 8, 1)) { Text("音声レベル (RMS)") }

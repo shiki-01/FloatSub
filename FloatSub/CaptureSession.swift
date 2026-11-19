@@ -3,6 +3,37 @@ import AVFoundation
 import Observation
 import Translation
 
+/// 音声の取り込み方式。実機検証（iOS 27）で ScreenCaptureKit の取得を確認したため、既定は ScreenCaptureKit。
+enum CaptureSource: String, CaseIterable, Identifiable {
+    case screenCaptureKit
+    case replayKit
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .screenCaptureKit: "ScreenCaptureKit"
+        case .replayKit: "ReplayKit（拡張）"
+        }
+    }
+
+    /// 現在の SDK で使える方式（ScreenCaptureKit は iOS 27 SDK のみ）
+    static var available: [CaptureSource] {
+        #if canImport(ScreenCaptureKit)
+        [.screenCaptureKit, .replayKit]
+        #else
+        [.replayKit]
+        #endif
+    }
+
+    static var preferred: CaptureSource { available[0] }
+}
+
+enum CaptureError: LocalizedError {
+    case unsupported
+    var errorDescription: String? { "この SDK では ScreenCaptureKit を利用できません" }
+}
+
 /// 統括。無音再生（実行維持）→ 翻訳準備 → 文字起こし → socket 待受、の順に起動する。
 /// 確定した文節ごとに、Translation framework で日本語へ翻訳する。
 @MainActor
@@ -10,6 +41,9 @@ import Translation
 final class CaptureSession {
     var isRunning = false
     var localeIdentifier = "en-US"
+    var captureSource = CaptureSource.preferred
+    /// 取り込みの状態（画面表示用）
+    var captureStatus = "停止"
     var targetLanguageIdentifier = "ja"
     var volatileText = ""
     var segments: [TranscriptSegment] = []
@@ -28,6 +62,9 @@ final class CaptureSession {
 
     private let keepAlive = KeepAlive()
     private let receiver = AudioReceiver()
+    #if canImport(ScreenCaptureKit)
+    private let sckSource = SCKAudioSource()
+    #endif
     private let engine = TranscriptionEngine()
     private let translator = TranslationEngine()
     /// 字幕の PiP 表示
@@ -62,26 +99,23 @@ final class CaptureSession {
             try await engine.start(localeIdentifier: localeIdentifier)
             log("文字起こし準備完了 (\(localeIdentifier))")
 
-            receiver.onEvent = { [weak self] msg in
-                Task { @MainActor in
-                    self?.extensionConnected = msg.contains("接続しました")
-                    self?.log(msg)
+            let handler = makeBufferHandler()
+            switch captureSource {
+            case .replayKit:
+                receiver.onEvent = { [weak self] msg in
+                    Task { @MainActor in
+                        self?.extensionConnected = msg.contains("接続しました")
+                        self?.captureStatus = msg
+                        self?.log(msg)
+                    }
                 }
+                receiver.onBuffer = handler
+                try receiver.start()
+                captureStatus = "拡張の接続待ち"
+                log("socket 待受を開始。画面収録（ブロードキャスト）を開始してください")
+            case .screenCaptureKit:
+                try await startScreenCaptureKit(handler)
             }
-            // 受信 Thread で変換・投入し、診断値のみ MainActor へ送る
-            receiver.onBuffer = { [weak self] buffer in
-                guard let self else { return }
-                self.engine.feed(buffer)
-                let rms = Self.rms(buffer)
-                let rate = buffer.format.sampleRate
-                Task { @MainActor in
-                    self.receivedBuffers += 1
-                    self.receivedSampleRate = rate
-                    self.level = rms
-                }
-            }
-            try receiver.start()
-            log("socket 待受を開始。画面収録（ブロードキャスト）を開始してください")
             isRunning = true
         } catch {
             log("開始に失敗: \(error.localizedDescription)")
@@ -91,6 +125,10 @@ final class CaptureSession {
 
     func stop() async {
         receiver.stop()
+        #if canImport(ScreenCaptureKit)
+        await sckSource.stop()
+        #endif
+        captureStatus = "停止"
         await engine.stop()
         keepAlive.stop()
         translator.reset()
@@ -100,6 +138,43 @@ final class CaptureSession {
         isRunning = false
         extensionConnected = false
         log("停止しました")
+    }
+
+    // MARK: - 取り込み
+
+    /// 受信した音声を文字起こしへ流し、診断値を更新する。取り込み側の Thread から呼ばれる。
+    private func makeBufferHandler() -> (AVAudioPCMBuffer) -> Void {
+        return { [weak self] buffer in
+            guard let self else { return }
+            self.engine.feed(buffer)
+            let rms = Self.rms(buffer)
+            let rate = buffer.format.sampleRate
+            Task { @MainActor in
+                self.receivedBuffers += 1
+                self.receivedSampleRate = rate
+                self.level = rms
+            }
+        }
+    }
+
+    /// 共有ピッカーで共有対象（画面全体）を選んでもらい、音声の取り込みを開始する。
+    private func startScreenCaptureKit(_ handler: @escaping (AVAudioPCMBuffer) -> Void) async throws {
+        #if canImport(ScreenCaptureKit)
+        sckSource.onBuffer = handler
+        sckSource.onEvent = { [weak self] msg in
+            Task { @MainActor in
+                self?.captureStatus = msg
+                self?.log(msg)
+            }
+        }
+        captureStatus = "共有対象の選択待ち"
+        log("共有ピッカーを開きます。画面全体の共有を開始してください")
+        try await sckSource.start()
+        captureStatus = "ScreenCaptureKit で取り込み中"
+        log("ScreenCaptureKit の取り込みを開始しました。他アプリで音声を再生してください")
+        #else
+        throw CaptureError.unsupported
+        #endif
     }
 
     // MARK: - 翻訳
