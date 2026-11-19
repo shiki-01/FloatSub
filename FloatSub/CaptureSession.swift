@@ -125,6 +125,8 @@ final class CaptureSession {
     private var activeSoundSegments: [SoundLabel: UUID] = [:]
     /// 音楽だけが鳴っている間は true。翻訳を抑制する
     private var musicSuppressed = false
+    /// コントロールセンターから開いたときの案内（画面共有の開始手前で表示）
+    var launchNotice = ""
     // ファイルの文字起こし
     var isTranscribingFile = false
     var fileProgress = 0.0
@@ -224,6 +226,7 @@ final class CaptureSession {
     func start() async {
         guard !isRunning, !isStarting, !isTranscribingFile else { return }
         isStarting = true
+        launchNotice = ""
         defer { isStarting = false }
         log("開始処理")
         pip.onLog = { [weak self] msg in self?.log(msg) }
@@ -341,6 +344,35 @@ final class CaptureSession {
         fileProgress = 0
         fileStatus = "準備中"
         fileTask = Task { await transcribeFile(url) }
+    }
+
+    /// コントロールセンターのボタンからの依頼を処理する。
+    /// 画面共有は、共有ピッカーを本体の画面から開く必要があるため、取り込み元の選択までを行う。
+    /// マイクはピッカーが不要なため、そのまま開始する。
+    func handleLaunchRequest(_ request: FloatSubLaunchRequest) async {
+        guard !isRunning, !isStarting, !isTranscribingFile else { return }
+        switch request {
+        case .screen:
+            if captureSource == .microphone { captureSource = CaptureSource.available.first { $0 != .microphone } ?? .replayKit }
+            launchNotice = "「開始」を押すと共有ピッカーが開きます。画面全体の共有を開始してください。"
+            log("コントロールセンターから開きました（画面共有）")
+        case .microphone:
+            captureSource = .microphone
+            launchNotice = ""
+            log("コントロールセンターから開きました（マイク）")
+            await start()
+        }
+    }
+
+    /// 保留中の依頼があれば処理する。インテントの書き込みが前面化より遅れても拾えるよう、少し待って再確認する。
+    func consumeLaunchRequests() async {
+        for attempt in 0..<3 {
+            if let request = FloatSubLaunchRequest.take() {
+                await handleLaunchRequest(request)
+                return
+            }
+            if attempt < 2 { try? await Task.sleep(for: .milliseconds(600)) }
+        }
     }
 
     func cancelFileTranscription() {

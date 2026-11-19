@@ -103,7 +103,7 @@ jobs:
                       kinds = sorted(c["attributes"].get("capabilityType") for c in caps["data"]) if caps else f"HTTP {st2}"
                       print(" ", ident, "→ 機能:", kinds)
               have = {b["attributes"].get("identifier") for b in bids["data"]}
-              for need in (prefix + ".floatsub", prefix + ".floatsub.broadcast"):
+              for need in (prefix + ".floatsub", prefix + ".floatsub.broadcast", prefix + ".floatsub.widgets"):
                   print(" 登録あり" if need in have else " 未登録", need)
           st, profs = get("/v1/profiles?limit=200")
           print("プロファイル HTTP", st, "件数:", len(profs["data"]) if profs else "-")

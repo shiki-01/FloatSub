@@ -41,13 +41,20 @@ struct ContentView: View {
                 session.applySubtitleStyle()
             }
             .task {
+                // コントロールセンターから起動された場合の依頼（初回起動では scenePhase の変化が来ない）
+                await session.consumeLaunchRequests()
+            }
+            .task {
                 await options.loadTargets()
                 await options.loadSources(target: session.targetLanguageIdentifier)
                 fixSelection()
             }
             // 前面へ戻ったとき、背面や高負荷で滞留した翻訳を再開する
             .onChange(of: scenePhase) {
-                if scenePhase == .active { Task { await session.resumeTranslations() } }
+                if scenePhase == .active {
+                    Task { await session.resumeTranslations() }
+                    Task { await session.consumeLaunchRequests() }
+                }
             }
             // 設定の保存と、字幕の見た目の反映
             .onChange(of: session.settingsSnapshot) {
@@ -112,6 +119,11 @@ struct ContentView: View {
             LabeledContent("翻訳", value: session.translationStatus)
             if session.captureSource == .replayKit, session.isRunning {
                 BroadcastStartButton()
+            }
+            if !session.launchNotice.isEmpty {
+                Label(session.launchNotice, systemImage: "captions.bubble.fill")
+                    .font(.footnote.bold())
+                    .foregroundStyle(Color.accentColor)
             }
             if !session.isRunning {
                 Text(startHint)

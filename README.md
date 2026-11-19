@@ -64,7 +64,7 @@ Mac に Xcode を入れず、GitHub Actions でビルドして TestFlight へ配
 事前準備（Apple Developer / App Store Connect）:
 
 1. App Group `group.<prefix>.floatsub` を登録する。
-2. App ID `<prefix>.floatsub` と `<prefix>.floatsub.broadcast` を登録し、どちらにも上記 App Group を割り当てる。
+2. App ID `<prefix>.floatsub`、`<prefix>.floatsub.broadcast`、`<prefix>.floatsub.widgets` を登録し、いずれにも上記 App Group を割り当てる。
 3. App Store Connect に、`<prefix>.floatsub` のアプリレコードを作成する。
 
 ## 開発状況
@@ -82,6 +82,14 @@ Phase 4 までは実機（iPhone 16e）で確認済み。Phase 5 は CI での�
 | 単語・文の保存 | 実装済み・実機確認待ち | 履歴の長押しで文・単語を保存できること、一覧での閲覧と削除、アプリ再起動後も保持されること。単語は訳を持たず、含まれていた文を併記する |
 | 音の認識 | 実装済み・実機確認待ち | 設定をオンにしたとき、笑い声・音楽・拍手の検出と「[笑い]」「[音楽]」の字幕・履歴への反映、音楽だけの区間で翻訳が「♪」になること、誤検出の頻度。既定はオフ |
 | ファイルの文字起こし | 実装済み・実機確認待ち | 音声（m4a、mp3）と動画（mp4、mov）の取り込み、進捗表示と中止、結果が履歴に入り書き出せること、アプリ内の再生で字幕が音声・映像と同期すること。解析は実時間の最大 15 倍の速度で行う。ファイルの処理中は音の認識・話者分離を使わない |
+| コントロールセンターのボタン | 実装済み・実機確認待ち | コントロールセンターの編集で「FloatSub」「FloatSub マイク」を追加できること、画面共有のボタンで開始の手前（案内表示）まで進むこと、マイクのボタンで本体が前面になり自動で開始すること（初回は許可ダイアログ） |
+
+### コントロールセンターのボタンの方式
+
+- 画面共有: 共有ピッカーは本体の画面からしか開けないため、ボタンは FloatSub を開き、取り込み元を画面共有に切り替えて「開始を押してください」と案内するところまでを行う。
+- マイク: コントロールから**直接の開始・停止はできない**。マイクの録音には、前面のアプリが音声セッションを有効にする必要があり、バックグラウンド（拡張の実行環境）からは開始できない。そのため、ボタンは FloatSub を開き、本体が前面になった時点でマイクの取り込みを自動で開始する導線にした。停止は本体の「停止」で行う。
+- 実装は `Shared/FloatSubIntents.swift`（App Intents。`openAppWhenRun`）と `FloatSubWidgets/`（Control Widget）。依頼は App Group の UserDefaults で本体へ渡す。
+- 配信には、Bundle ID `<prefix>.floatsub.widgets` を登録し、同じ App Group を割り当てる必要がある（自動署名で作成されない場合）。
 
 ## ライセンス
 
