@@ -4,7 +4,7 @@ name: FloatSub
 options:
   bundleIdPrefix: ${BUNDLE_ID_PREFIX}
   deploymentTarget:
-    iOS: "27.0"
+    iOS: "26.0"
   createIntermediateGroups: true
 settings:
   base:

@@ -29,7 +29,7 @@ final class TranscriptionEngine {
         guard let locale = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: localeIdentifier)) else {
             throw EngineError.unsupportedLocale(localeIdentifier)
         }
-        let transcriber = SpeechTranscriber(locale: locale, preset: .progressiveLiveTranscription)
+        let transcriber = SpeechTranscriber(locale: locale, preset: .progressiveTranscription)
 
         // 言語モデルが未取得なら AssetInventory 経由でダウンロードする
         if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
