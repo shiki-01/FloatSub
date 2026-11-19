@@ -10,6 +10,8 @@ struct ContentView: View {
     @State private var shareItem: ShareItem?
     @State private var confirmClear = false
     @State private var exportError = ""
+    @State private var savedItems = SavedItemStore()
+    @State private var wordPickerSegment: TranscriptSegment?
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -23,6 +25,7 @@ struct ContentView: View {
                 subtitleSection
                 pipSection
                 historySection
+                savedSection
                 transcriptSection
                 detailSection
             }
@@ -53,6 +56,7 @@ struct ContentView: View {
                 }
             }
             .sheet(item: $shareItem) { item in ShareSheet(url: item.url) }
+            .sheet(item: $wordPickerSegment) { segment in WordPickerView(segment: segment, store: savedItems) }
             .confirmationDialog("履歴をすべて削除しますか？", isPresented: $confirmClear, titleVisibility: .visible) {
                 Button("すべて削除", role: .destructive) { session.clearHistory() }
             } message: {
@@ -204,6 +208,18 @@ struct ContentView: View {
         }
     }
 
+    private var savedSection: some View {
+        Section {
+            NavigationLink {
+                SavedItemsView(store: savedItems)
+            } label: {
+                LabeledContent("保存した単語・文", value: "\(savedItems.items.count) 件")
+            }
+        } footer: {
+            Text("下の履歴の項目を長押しすると、文や単語を保存できます。")
+        }
+    }
+
     private var historySection: some View {
         Section {
             Picker("書き出す内容", selection: $exportContent) {
@@ -246,6 +262,12 @@ struct ContentView: View {
                          ?? (segment.isTranslationAbandoned ? "（翻訳できません）" : "（翻訳待ち）"))
                         .font(.headline)
                         .opacity(segment.translation == nil ? 0.5 : 1)
+                }
+                .contextMenu {
+                    Button("文を保存", systemImage: "bookmark") {
+                        savedItems.add(kind: .sentence, text: segment.text, translation: segment.translation ?? "")
+                    }
+                    Button("単語を選んで保存", systemImage: "textformat.abc") { wordPickerSegment = segment }
                 }
             }
         }
