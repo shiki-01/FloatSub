@@ -59,6 +59,8 @@ final class CaptureSession {
     var showLiveOriginal = false
     /// 話している途中の訳（暫定訳）を薄く表示するか
     var showProvisional = true
+    /// 笑い声・音楽・拍手などの非音声イベントを検出して字幕と履歴に出すか（既定はオフ）
+    var soundRecognition = false
     var fontScale = 1.0
     /// 字幕フレームの背景の不透明度と、訳文の文字色
     var backgroundOpacity = 1.0
@@ -114,6 +116,15 @@ final class CaptureSession {
     private var volatileCaptured: TimeInterval?
     /// 現在の残りの先頭にあたる音声位置
     private var restAudioStart: Double?
+    // 非音声イベント
+    private var soundDetector: SoundEventDetector?
+    /// 字幕に出している非音声イベントの表記（[音楽] など）
+    private var soundCaption: String?
+    private var soundCaptionTask: Task<Void, Never>?
+    /// 検出中のイベントの履歴上の文節
+    private var activeSoundSegments: [SoundLabel: UUID] = [:]
+    /// 音楽だけが鳴っている間は true。翻訳を抑制する
+    private var musicSuppressed = false
     private var provisionalTask: Task<Void, Never>?
     private var pauseTask: Task<Void, Never>?
     private var provisionalSource = ""
@@ -131,6 +142,7 @@ final class CaptureSession {
         var showOriginal: Bool
         var showLiveOriginal: Bool
         var showProvisional: Bool
+        var soundRecognition: Bool
         var fontScale: Double
         var backgroundOpacity: Double
         var textColor: SubtitleTextColor
@@ -140,7 +152,7 @@ final class CaptureSession {
     var settingsSnapshot: SettingsSnapshot {
         SettingsSnapshot(locale: localeIdentifier, target: targetLanguageIdentifier, source: captureSource,
                          showOriginal: showOriginal, showLiveOriginal: showLiveOriginal, showProvisional: showProvisional,
-                         fontScale: fontScale, backgroundOpacity: backgroundOpacity, textColor: textColor, glossary: glossary)
+                         soundRecognition: soundRecognition, fontScale: fontScale, backgroundOpacity: backgroundOpacity, textColor: textColor, glossary: glossary)
     }
 
     init() {
@@ -151,6 +163,7 @@ final class CaptureSession {
            CaptureSource.available.contains(v) { captureSource = v }
         if d.object(forKey: "showOriginal") != nil { showOriginal = d.bool(forKey: "showOriginal") }
         showLiveOriginal = d.bool(forKey: "showLiveOriginal")
+        soundRecognition = d.bool(forKey: "soundRecognition")
         if d.object(forKey: "showProvisional") != nil { showProvisional = d.bool(forKey: "showProvisional") }
         if d.object(forKey: "fontScale") != nil { fontScale = d.double(forKey: "fontScale") }
         if d.object(forKey: "backgroundOpacity") != nil { backgroundOpacity = d.double(forKey: "backgroundOpacity") }
@@ -167,6 +180,7 @@ final class CaptureSession {
         d.set(showOriginal, forKey: "showOriginal")
         d.set(showLiveOriginal, forKey: "showLiveOriginal")
         d.set(showProvisional, forKey: "showProvisional")
+        d.set(soundRecognition, forKey: "soundRecognition")
         d.set(fontScale, forKey: "fontScale")
         d.set(backgroundOpacity, forKey: "backgroundOpacity")
         d.set(textColor.rawValue, forKey: "textColor")
@@ -227,6 +241,7 @@ final class CaptureSession {
             try await engine.start(localeIdentifier: localeIdentifier)
             log("文字起こし準備完了 (\(localeIdentifier))")
 
+            if soundRecognition { startSoundDetector() } else { soundDetector = nil }
             let handler = makeBufferHandler()
             switch captureSource {
             case .replayKit:
@@ -302,6 +317,12 @@ final class CaptureSession {
         keepAlive.stop()
         translator.reset()
         cancelPartialWork()
+        soundDetector?.stop()
+        soundDetector = nil
+        soundCaptionTask?.cancel()
+        soundCaption = nil
+        activeSoundSegments.removeAll()
+        musicSuppressed = false
         watchdogTask?.cancel()
         watchdogTask = nil
         flushGeneration += 1
@@ -318,9 +339,11 @@ final class CaptureSession {
 
     /// 受信した音声を文字起こしへ流し、診断値を更新する。取り込み側の Thread から呼ばれる。
     private func makeBufferHandler() -> (AVAudioPCMBuffer) -> Void {
+        let detector = soundDetector
         return { [weak self] buffer in
             guard let self else { return }
             self.engine.feed(buffer)
+            detector?.feed(buffer)
             let rms = Self.rms(buffer)
             let rate = buffer.format.sampleRate
             Task { @MainActor in
@@ -508,7 +531,11 @@ final class CaptureSession {
         var original: String
         var translation: String
         var isProvisional = false
-        if showProvisional, !rest.isEmpty, !provisionalTranslation.isEmpty {
+        if let caption = soundCaption, rest.isEmpty {
+            // 話している途中の残りがないときは、非音声イベントの表記を出す
+            original = ""
+            translation = caption
+        } else if showProvisional, !rest.isEmpty, !provisionalTranslation.isEmpty {
             original = showLiveOriginal ? rest : ""
             translation = provisionalTranslation
             isProvisional = true
@@ -569,6 +596,60 @@ final class CaptureSession {
         log(String(format: "遅延 字幕（確定訳）%.2f 秒", total) + detail)
     }
 
+    // MARK: - 非音声イベント（笑い・音楽・拍手など）
+
+    private func startSoundDetector() {
+        let detector = SoundEventDetector()
+        detector.onEvent = { [weak self] event in
+            Task { @MainActor in self?.handleSound(event) }
+        }
+        detector.onMusicOnlyChange = { [weak self] musicOnly in
+            Task { @MainActor in
+                guard let self else { return }
+                self.musicSuppressed = musicOnly
+                self.log(musicOnly ? "音楽を検出：翻訳を抑制します" : "音楽が終わりました：翻訳を再開します")
+                if musicOnly { self.resetProvisional() }
+            }
+        }
+        soundDetector = detector
+        log("音の認識を有効にしました")
+    }
+
+    /// 非音声イベントを字幕に出し、履歴に残す。音楽は鳴っている間、表記を出し続ける。
+    private func handleSound(_ event: SoundEvent) {
+        guard isRunning else { return }
+        switch event.phase {
+        case .began:
+            let segment = TranscriptSegment(kind: .sound, text: event.label.caption, translation: event.label.caption,
+                                            audioStart: event.time, audioEnd: event.time + 1)
+            segments.append(segment)
+            activeSoundSegments[event.label] = segment.id
+            showSoundCaption(event.label.caption, keepWhileActive: event.label == .music)
+        case .ended:
+            if let id = activeSoundSegments.removeValue(forKey: event.label),
+               let i = segments.firstIndex(where: { $0.id == id }) {
+                segments[i].audioEnd = max(event.time, segments[i].audioStart + 1)
+            }
+            if event.label == .music, soundCaption == SoundLabel.music.caption {
+                soundCaption = nil
+                updatePiP()
+            }
+        }
+    }
+
+    private func showSoundCaption(_ caption: String, keepWhileActive: Bool) {
+        soundCaptionTask?.cancel()
+        soundCaption = caption
+        updatePiP()
+        if keepWhileActive { return }
+        soundCaptionTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled, let self else { return }
+            self.soundCaption = nil
+            self.updatePiP()
+        }
+    }
+
     // MARK: - 途中結果の処理（区切りと暫定訳）
 
     /// 暫定訳を作る最小の文字数と、翻訳を始める最小の間隔
@@ -580,7 +661,10 @@ final class CaptureSession {
     /// 履歴へ文節を追加する。reuse の訳（暫定訳）が同じ原文のものなら、翻訳を省いてそのまま確定訳にする。
     private func appendSegment(text: String, start: Double, end: Double) {
         var segment = TranscriptSegment(text: text, audioStart: start, audioEnd: end)
-        if showProvisional, !provisionalTranslation.isEmpty {
+        if musicSuppressed {
+            // 音楽だけが鳴っている間の認識結果は、翻訳しない
+            segment.translation = "♪"
+        } else if showProvisional, !provisionalTranslation.isEmpty {
             if provisionalSource == text {
                 segment.translation = provisionalTranslation
             } else {
@@ -640,7 +724,7 @@ final class CaptureSession {
 
     /// 話している途中の残りを翻訳して暫定訳にする。同時に 1 件だけ実行し、終わったら最新の残りで繰り返す。
     private func scheduleProvisional() {
-        guard showProvisional, translator.isReady, provisionalTask == nil else { return }
+        guard showProvisional, !musicSuppressed, translator.isReady, provisionalTask == nil else { return }
         provisionalTask = Task { [weak self] in await self?.runProvisionalLoop() }
     }
 

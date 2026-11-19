@@ -23,6 +23,7 @@ enum ExportContent: String, CaseIterable, Identifiable {
 enum HistoryExporter {
     /// 1 件の字幕として出す行。訳が未完了の文節は原文だけを出す。
     private static func lines(_ segment: TranscriptSegment, content: ExportContent) -> [String] {
+        if segment.kind == .sound { return [segment.text] }
         let translation = segment.translation?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         switch content {
         case .both: return [translation, segment.text].filter { !$0.isEmpty }

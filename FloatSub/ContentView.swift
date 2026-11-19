@@ -22,6 +22,7 @@ struct ContentView: View {
                 if session.captureSource == .microphone { liveSubtitleSection }
                 languageSection
                 glossarySection
+                soundSection
                 subtitleSection
                 pipSection
                 historySection
@@ -156,6 +157,15 @@ struct ContentView: View {
         .disabled(session.isRunning)
     }
 
+    private var soundSection: some View {
+        Section {
+            Toggle("音の認識（笑い・音楽・拍手など）", isOn: $session.soundRecognition)
+                .disabled(session.isRunning)
+        } footer: {
+            Text("オンにすると、笑い声・音楽・拍手・歓声を検出し、「[笑い]」「[音楽]」のように字幕と履歴に出します。音楽だけが鳴っている間は翻訳を控えます。端末内の解析で、次の開始から有効です。")
+        }
+    }
+
     private var glossarySection: some View {
         Section {
             NavigationLink {
@@ -264,10 +274,12 @@ struct ContentView: View {
                         .opacity(segment.translation == nil ? 0.5 : 1)
                 }
                 .contextMenu {
+                    if segment.kind == .speech {
                     Button("文を保存", systemImage: "bookmark") {
                         savedItems.add(kind: .sentence, text: segment.text, translation: segment.translation ?? "")
                     }
                     Button("単語を選んで保存", systemImage: "textformat.abc") { wordPickerSegment = segment }
+                    }
                 }
             }
         }

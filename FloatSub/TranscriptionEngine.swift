@@ -3,8 +3,12 @@ import AVFoundation
 import Speech
 
 struct TranscriptSegment: Identifiable {
+    /// 発話か、非音声イベント（[笑い] など）か
+    enum Kind { case speech, sound }
+
     let id = UUID()
-    let text: String
+    var kind = Kind.speech
+    var text: String
     /// 日本語訳。翻訳完了まで nil
     var translation: String?
     /// 確定訳が届くまで仮に出す暫定訳（薄く表示する）
