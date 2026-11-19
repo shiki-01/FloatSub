@@ -31,6 +31,7 @@ targets:
         AppGroupID: $(APP_GROUP_ID)
         BroadcastExtensionID: ${BUNDLE_ID_PREFIX}.floatsub.broadcast
         NSSpeechRecognitionUsageDescription: 取り込んだ音声を端末内で文字起こしするために使用します。
+        NSMicrophoneUsageDescription: 対面会話や講義などの音声を端末内で文字起こしするために使用します。音声は端末の外へ送信されません。
         ITSAppUsesNonExemptEncryption: false
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait

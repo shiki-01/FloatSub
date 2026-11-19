@@ -7,22 +7,24 @@ import Translation
 enum CaptureSource: String, CaseIterable, Identifiable {
     case screenCaptureKit
     case replayKit
+    case microphone
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .screenCaptureKit: "ScreenCaptureKit"
-        case .replayKit: "ReplayKit（拡張）"
+        case .screenCaptureKit: "画面共有（ScreenCaptureKit）"
+        case .replayKit: "画面共有（ReplayKit 拡張）"
+        case .microphone: "マイク"
         }
     }
 
     /// 現在の SDK で使える方式（ScreenCaptureKit は iOS 27 SDK のみ）
     static var available: [CaptureSource] {
         #if canImport(ScreenCaptureKit)
-        [.screenCaptureKit, .replayKit]
+        [.screenCaptureKit, .replayKit, .microphone]
         #else
-        [.replayKit]
+        [.replayKit, .microphone]
         #endif
     }
 
@@ -31,7 +33,13 @@ enum CaptureSource: String, CaseIterable, Identifiable {
 
 enum CaptureError: LocalizedError {
     case unsupported
-    var errorDescription: String? { "この SDK では ScreenCaptureKit を利用できません" }
+    case microphoneDenied
+    var errorDescription: String? {
+        switch self {
+        case .unsupported: "この SDK では ScreenCaptureKit を利用できません"
+        case .microphoneDenied: "マイクの使用が許可されていません"
+        }
+    }
 }
 
 /// 統括。無音再生（実行維持）→ 翻訳準備 → 文字起こし → socket 待受、の順に起動する。
@@ -51,6 +59,11 @@ final class CaptureSession {
     var showLiveOriginal = false
     var fontScale = 1.0
     var volatileText = ""
+    /// アプリ内の字幕表示用（PiP と同じ内容）。マイク使用時など、PiP を使わずに見る場合に使う
+    var displayOriginal = ""
+    var displayTranslation = ""
+    /// マイクの権限がないとき true。ContentView が設定アプリへの案内を出す
+    var microphoneDenied = false
     var segments: [TranscriptSegment] = []
     var logs: [String] = []
     /// 音声から字幕までの遅延の集計（詳細欄に表示）
@@ -70,6 +83,7 @@ final class CaptureSession {
 
     private let keepAlive = KeepAlive()
     private let receiver = AudioReceiver()
+    private let micSource = MicrophoneAudioSource()
     #if canImport(ScreenCaptureKit)
     private let sckSource = SCKAudioSource()
     #endif
@@ -135,8 +149,13 @@ final class CaptureSession {
         defer { isStarting = false }
         log("開始処理")
         pip.onLog = { [weak self] msg in self?.log(msg) }
+        microphoneDenied = false
         do {
-            try keepAlive.start()
+            if captureSource == .microphone {
+                // 権限の確認は、音声セッションを変更する前に行う
+                guard await ensureMicrophonePermission() else { throw CaptureError.microphoneDenied }
+            }
+            try keepAlive.start(recording: captureSource == .microphone)
             log("無音再生を開始（実行維持）")
 
             await prepareTranslation()
@@ -175,16 +194,56 @@ final class CaptureSession {
                 log("socket 待受を開始。画面収録（ブロードキャスト）を開始してください")
             case .screenCaptureKit:
                 try await startScreenCaptureKit(handler)
+            case .microphone:
+                try startMicrophone(handler)
             }
             isRunning = true
         } catch {
             log("開始に失敗: \(error.localizedDescription)")
             await stop()
+            if case CaptureError.microphoneDenied = error {
+                microphoneDenied = true
+                captureStatus = "マイクの使用が許可されていません"
+            }
         }
+    }
+
+    /// マイクの録音権限を確認し、未決定なら要求する。
+    private func ensureMicrophonePermission() async -> Bool {
+        switch MicrophoneAudioSource.permission {
+        case .granted:
+            return true
+        case .denied:
+            log("マイクの権限が拒否されています")
+            return false
+        default:
+            let granted = await MicrophoneAudioSource.requestPermission()
+            log(granted ? "マイクの権限が許可されました" : "マイクの権限が許可されませんでした")
+            return granted
+        }
+    }
+
+    private func startMicrophone(_ handler: @escaping (AVAudioPCMBuffer) -> Void) throws {
+        micSource.onBuffer = handler
+        micSource.onEvent = { [weak self] msg in
+            Task { @MainActor in self?.log(msg) }
+        }
+        micSource.onStopped = { [weak self] error in
+            Task { @MainActor in
+                guard let self, self.isRunning else { return }
+                self.log("マイクの取り込みが停止しました: \(error.localizedDescription)")
+                await self.stop()
+                self.captureStatus = "マイクが停止しました（開始し直してください）"
+            }
+        }
+        try micSource.start()
+        captureStatus = "マイクで取り込み中"
+        log("マイクの取り込みを開始しました")
     }
 
     func stop() async {
         receiver.stop()
+        micSource.stop()
         #if canImport(ScreenCaptureKit)
         await sckSource.stop()
         #endif
@@ -314,6 +373,8 @@ final class CaptureSession {
         let original = (showLiveOriginal && !volatileText.isEmpty) ? volatileText : (last?.text ?? "")
         let translation = last.map { $0.translation ?? "翻訳中…" } ?? ""
         guard !original.isEmpty || !translation.isEmpty else { return }
+        displayOriginal = original
+        displayTranslation = translation
         pip.show(original: original, translation: translation)
     }
 

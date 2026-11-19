@@ -11,6 +11,8 @@ struct ContentView: View {
         NavigationStack {
             List {
                 controlSection
+                inputSection
+                if session.captureSource == .microphone { liveSubtitleSection }
                 languageSection
                 subtitleSection
                 pipSection
@@ -38,6 +40,15 @@ struct ContentView: View {
                     await options.loadSources(target: session.targetLanguageIdentifier)
                     fixSelection()
                 }
+            }
+            // マイクの権限がないとき、設定アプリへの案内を出す
+            .alert("マイクを使用できません", isPresented: $session.microphoneDenied) {
+                Button("設定を開く") {
+                    if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                }
+                Button("閉じる", role: .cancel) {}
+            } message: {
+                Text("マイクの音声を文字起こしするには、設定アプリの FloatSub でマイクを許可してください。音声は端末内で処理され、外部へは送信されません。")
             }
             // 言語モデルが未導入のとき、システムのダウンロード確認を出すために必要
             .translationTask(session.translationConfiguration) { translationSession in
@@ -71,8 +82,38 @@ struct ContentView: View {
         }
     }
 
+    /// 取り込み元の選択。実行中は変更できない。
+    private var inputSection: some View {
+        Section("入力") {
+            Picker("取り込み元", selection: $session.captureSource) {
+                ForEach(CaptureSource.available) { Text($0.title).tag($0) }
+            }
+            .disabled(session.isRunning)
+        }
+    }
+
+    /// マイク使用時の字幕。PiP を使わず、アプリ内だけで字幕を見られるようにする。
+    private var liveSubtitleSection: some View {
+        Section("字幕") {
+            VStack(alignment: .leading, spacing: 8) {
+                if session.showOriginal, !session.displayOriginal.isEmpty {
+                    Text(session.displayOriginal)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                Text(session.displayTranslation.isEmpty ? "字幕を待っています" : session.displayTranslation)
+                    .font(.system(size: 22 * session.fontScale, weight: .bold))
+                    .foregroundStyle(session.displayTranslation.isEmpty ? .secondary : .primary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 4)
+        }
+    }
+
     private var startHint: String {
         switch session.captureSource {
+        case .microphone:
+            "開始するとマイクの音声を文字起こしし、翻訳を上の「字幕」に表示します。他のアプリへ切り替えると、字幕は PiP の小窓に表示されます。初回はマイクの許可を求められます。"
         case .screenCaptureKit:
             "開始すると共有ピッカーが開きます。画面全体の共有を開始し、YouTube などで音声を再生してください。字幕は PiP の小窓に表示されます。"
         case .replayKit:
@@ -143,10 +184,6 @@ struct ContentView: View {
     private var detailSection: some View {
         Section {
             DisclosureGroup("詳細（取り込み方式・診断・ログ）") {
-                Picker("取り込み方式", selection: $session.captureSource) {
-                    ForEach(CaptureSource.available) { Text($0.title).tag($0) }
-                }
-                .disabled(session.isRunning)
                 if session.captureSource == .replayKit {
                     LabeledContent("拡張の接続", value: session.extensionConnected ? "接続中" : "未接続")
                 }

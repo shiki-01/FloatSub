@@ -9,10 +9,16 @@ final class KeepAlive {
     private(set) var isRunning = false
     private var interruptionObserver: NSObjectProtocol?
 
-    func start() throws {
+    /// recording が true のときは、マイク入力のために録音も可能なカテゴリで開始する。
+    func start(recording: Bool = false) throws {
         guard !isRunning else { return }
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+        if recording {
+            // 他アプリの再生を止めず、出力はスピーカーに残す
+            try session.setCategory(.playAndRecord, mode: .default, options: [.mixWithOthers, .defaultToSpeaker])
+        } else {
+            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+        }
         try session.setActive(true)
 
         let format = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 1)!
