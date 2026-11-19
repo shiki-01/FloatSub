@@ -395,15 +395,21 @@ final class CaptureSession {
     }
 
     /// コントロールセンターのボタンからの依頼を処理する。
-    /// 画面共有は、共有ピッカーを本体の画面から開く必要があるため、取り込み元の選択までを行う。
+    /// 画面共有は、本体が前面になった時点で開始し、共有ピッカー（画面共有開始のポップアップ）を開く。
+    /// ただし ReplayKit（iOS 26）は開始操作を利用者が行う必要があるため、取り込み元の選択と案内までにとどめる。
     /// マイクはピッカーが不要なため、そのまま開始する。
     func handleLaunchRequest(_ request: FloatSubLaunchRequest) async {
         guard !isRunning, !isStarting, !isTranscribingFile else { return }
         switch request {
         case .screen:
             if captureSource == .microphone { captureSource = CaptureSource.available.first { $0 != .microphone } ?? .replayKit }
-            launchNotice = "「開始」を押すと共有ピッカーが開きます。画面全体の共有を開始してください。"
             log("コントロールセンターから開きました（画面共有）")
+            if captureSource == .screenCaptureKit {
+                launchNotice = ""
+                await start()
+            } else {
+                launchNotice = "「開始」を押したあと、「画面収録（音声取り込み）」から FloatSub Broadcast を選んでください。"
+            }
         case .microphone:
             captureSource = .microphone
             launchNotice = ""
