@@ -32,6 +32,9 @@ final class TranscriptionEngine {
             throw EngineError.unsupportedLocale(localeIdentifier)
         }
         let transcriber = SpeechTranscriber(locale: locale, preset: .progressiveTranscription)
+        // 端末の音声モデルの状況を記録する（OS 管理のアセットのため、アプリ側でバージョンは選べない）
+        let installed = await SpeechTranscriber.installedLocales.map(\.identifier).sorted()
+        onLog?("OS \(ProcessInfo.processInfo.operatingSystemVersionString) / 導入済み音声モデル: \(installed.joined(separator: ", "))")
 
         // 言語モデルが未取得なら AssetInventory 経由でダウンロードする
         if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {

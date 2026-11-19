@@ -33,6 +33,8 @@ final class CaptureSession {
     /// 字幕の PiP 表示
     let pip = PiPController()
     private var isTranslating = false
+    /// 開始処理の多重実行を防ぐ（isRunning は開始完了後に立つため別に持つ）
+    private var isStarting = false
 
     private var sourceLanguage: Locale.Language {
         Locale(identifier: localeIdentifier).language
@@ -42,7 +44,9 @@ final class CaptureSession {
     }
 
     func start() async {
-        guard !isRunning else { return }
+        guard !isRunning, !isStarting else { return }
+        isStarting = true
+        defer { isStarting = false }
         log("開始処理")
         pip.onLog = { [weak self] msg in self?.log(msg) }
         do {
