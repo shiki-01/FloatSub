@@ -60,6 +60,8 @@ final class CaptureSession {
     var showProvisional = true
     /// 笑い声・音楽・拍手などの非音声イベントを検出して字幕と履歴に出すか（既定はオフ）
     var soundRecognition = false
+    /// 検出する種類（音楽・笑い・拍手・歓声）。既定はすべて
+    var soundLabels = Set(SoundLabel.allCases)
     /// 話者を分離して、字幕と履歴に話者ラベルを付けるか（既定はオフ）
     var speakerDiarization = false
     var fontScale = 1.0
@@ -173,6 +175,7 @@ final class CaptureSession {
         var showLiveOriginal: Bool
         var showProvisional: Bool
         var soundRecognition: Bool
+        var soundLabels: Set<SoundLabel>
         var speakerDiarization: Bool
         var fontScale: Double
         var backgroundOpacity: Double
@@ -183,7 +186,7 @@ final class CaptureSession {
     var settingsSnapshot: SettingsSnapshot {
         SettingsSnapshot(locale: localeIdentifier, target: targetLanguageIdentifier, source: captureSource,
                          showOriginal: showOriginal, showLiveOriginal: showLiveOriginal, showProvisional: showProvisional,
-                         soundRecognition: soundRecognition, speakerDiarization: speakerDiarization, fontScale: fontScale, backgroundOpacity: backgroundOpacity, textColor: textColor, glossary: glossary)
+                         soundRecognition: soundRecognition, soundLabels: soundLabels, speakerDiarization: speakerDiarization, fontScale: fontScale, backgroundOpacity: backgroundOpacity, textColor: textColor, glossary: glossary)
     }
 
     /// 熱状態の表示名
@@ -220,6 +223,7 @@ final class CaptureSession {
         if d.object(forKey: "showOriginal") != nil { showOriginal = d.bool(forKey: "showOriginal") }
         showLiveOriginal = d.bool(forKey: "showLiveOriginal")
         soundRecognition = d.bool(forKey: "soundRecognition")
+        if let raw = d.stringArray(forKey: "soundLabels") { soundLabels = Set(raw.compactMap(SoundLabel.init(rawValue:))) }
         speakerDiarization = d.bool(forKey: "speakerDiarization")
         if d.object(forKey: "showProvisional") != nil { showProvisional = d.bool(forKey: "showProvisional") }
         if d.object(forKey: "fontScale") != nil { fontScale = d.double(forKey: "fontScale") }
@@ -238,6 +242,7 @@ final class CaptureSession {
         d.set(showLiveOriginal, forKey: "showLiveOriginal")
         d.set(showProvisional, forKey: "showProvisional")
         d.set(soundRecognition, forKey: "soundRecognition")
+        d.set(soundLabels.map(\.rawValue).sorted(), forKey: "soundLabels")
         d.set(speakerDiarization, forKey: "speakerDiarization")
         d.set(fontScale, forKey: "fontScale")
         d.set(backgroundOpacity, forKey: "backgroundOpacity")
@@ -845,6 +850,7 @@ final class CaptureSession {
 
     private func startSoundDetector() {
         let detector = SoundEventDetector()
+        detector.enabledLabels = soundLabels
         detector.onEvent = { [weak self] event in
             Task { @MainActor in self?.handleSound(event) }
         }

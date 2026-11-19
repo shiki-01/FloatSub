@@ -43,6 +43,8 @@ struct SoundEvent {
 final class SoundEventDetector: NSObject, SNResultsObserving, @unchecked Sendable {
     /// イベントの開始・終了（解析キューから呼ばれる）
     var onEvent: ((SoundEvent) -> Void)?
+    /// 検出する種類。ここにない種類は、検出も表示もしない（音楽を外すと、音楽区間の翻訳抑制も働かない）
+    var enabledLabels = Set(SoundLabel.allCases)
     /// 「音楽だけが鳴っていて、話し声が少ない」状態が変わったとき（翻訳の抑制に使う）
     var onMusicOnlyChange: ((Bool) -> Void)?
 
@@ -114,7 +116,7 @@ final class SoundEventDetector: NSObject, SNResultsObserving, @unchecked Sendabl
                 return Double(classification.confidence)
             }.max() ?? 0
         }
-        for label in SoundLabel.allCases {
+        for label in SoundLabel.allCases where enabledLabels.contains(label) {
             if confidence(label.identifiers) >= Self.threshold {
                 lastAbove[label] = time
                 if active.insert(label).inserted {

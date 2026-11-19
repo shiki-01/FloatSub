@@ -215,12 +215,31 @@ struct ContentView: View {
         .disabled(session.isRunning)
     }
 
+    /// 種類ごとのオン・オフ。実行中は変更できない。
+    private func soundLabelBinding(_ labels: [SoundLabel]) -> Binding<Bool> {
+        Binding(
+            get: { labels.allSatisfy { session.soundLabels.contains($0) } },
+            set: { isOn in
+                for label in labels {
+                    if isOn { session.soundLabels.insert(label) } else { session.soundLabels.remove(label) }
+                }
+            })
+    }
+
     private var soundSection: some View {
         Section {
             Toggle("音の認識（笑い・音楽・拍手など）", isOn: $session.soundRecognition)
                 .disabled(session.isRunning)
+            if session.soundRecognition {
+                Group {
+                    Toggle("音楽", isOn: soundLabelBinding([.music]))
+                    Toggle("笑い", isOn: soundLabelBinding([.laughter]))
+                    Toggle("拍手・歓声", isOn: soundLabelBinding([.applause, .cheering]))
+                }
+                .disabled(session.isRunning)
+            }
         } footer: {
-            Text("オンにすると、笑い声・音楽・拍手・歓声を検出し、「[笑い]」「[音楽]」のように字幕と履歴に出します。音楽だけが鳴っている間は翻訳を控えます。端末内の解析で、次の開始から有効です。")
+            Text("オンにすると、笑い声・音楽・拍手・歓声を検出し、「[笑い]」「[音楽]」のように字幕と履歴に出します。音楽だけが鳴っている間は翻訳を控えます（音楽をオフにすると、この抑制も働きません）。種類ごとにオン・オフでき、端末内の解析で、次の開始から有効です。")
         }
     }
 
