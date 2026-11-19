@@ -1,6 +1,7 @@
 import SwiftUI
 import ReplayKit
 import Translation
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @State private var session = CaptureSession()
@@ -10,6 +11,9 @@ struct ContentView: View {
     @State private var shareItem: ShareItem?
     @State private var confirmClear = false
     @State private var exportError = ""
+    @State private var showFileImporter = false
+    @State private var confirmFileReplace = false
+    @State private var showPlayback = false
     @State private var savedItems = SavedItemStore()
     @State private var wordPickerSegment: TranscriptSegment?
     @Environment(\.scenePhase) private var scenePhase
@@ -19,6 +23,7 @@ struct ContentView: View {
             List {
                 controlSection
                 inputSection
+                fileSection
                 if session.captureSource == .microphone { liveSubtitleSection }
                 languageSection
                 glossarySection
@@ -57,6 +62,17 @@ struct ContentView: View {
                 }
             }
             .sheet(item: $shareItem) { item in ShareSheet(url: item.url) }
+            .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.audio, .movie]) { result in
+                if case .success(let url) = result { session.startFileTranscription(url) }
+            }
+            .confirmationDialog("現在の履歴は、ファイルの結果で置き換えられます", isPresented: $confirmFileReplace, titleVisibility: .visible) {
+                Button("置き換えて続ける", role: .destructive) { showFileImporter = true }
+            }
+            .sheet(isPresented: $showPlayback) {
+                if let url = session.playbackURL {
+                    FilePlaybackView(url: url, segments: session.segments, style: session.currentStyle)
+                }
+            }
             .sheet(item: $wordPickerSegment) { segment in WordPickerView(segment: segment, store: savedItems) }
             .confirmationDialog("履歴をすべて削除しますか？", isPresented: $confirmClear, titleVisibility: .visible) {
                 Button("すべて削除", role: .destructive) { session.clearHistory() }
@@ -91,6 +107,7 @@ struct ContentView: View {
                     .font(.headline)
             }
             .tint(session.isRunning ? .red : .accentColor)
+            .disabled(session.isTranscribingFile)
             LabeledContent("状態", value: session.captureStatus)
             LabeledContent("翻訳", value: session.translationStatus)
             if session.captureSource == .replayKit, session.isRunning {
@@ -111,6 +128,29 @@ struct ContentView: View {
                 ForEach(CaptureSource.available) { Text($0.title).tag($0) }
             }
             .disabled(session.isRunning)
+        }
+    }
+
+    /// 音声・動画ファイルの文字起こし。結果は履歴に入り、書き出しも共通。
+    private var fileSection: some View {
+        Section {
+            if session.isTranscribingFile {
+                ProgressView(value: session.fileProgress) { Text(session.fileStatus) }
+                Button("中止", role: .destructive) { session.cancelFileTranscription() }
+            } else {
+                Button("ファイルを文字起こし", systemImage: "doc.badge.waveform") {
+                    if session.segments.isEmpty { showFileImporter = true } else { confirmFileReplace = true }
+                }
+                .disabled(session.isRunning)
+                if !session.fileStatus.isEmpty { LabeledContent("状態", value: session.fileStatus) }
+                if session.playbackURL != nil {
+                    Button("字幕付きで再生", systemImage: "play.rectangle") { showPlayback = true }
+                }
+            }
+        } header: {
+            Text("ファイル")
+        } footer: {
+            Text("音声・動画ファイルを端末内で文字起こしし、翻訳します。結果は下の履歴に入り、テキスト・SRT で書き出せます。原語と翻訳先は「言語」の設定を使います。")
         }
     }
 

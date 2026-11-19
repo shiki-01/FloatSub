@@ -55,6 +55,8 @@ final class TranscriptionEngine {
     private var analyzerFormat: AVAudioFormat?
     private var converter: AVAudioConverter?
     private var converterInputFormat: AVAudioFormat?
+    /// 結果の受信が終わったか（finishAndDrain の待機用）
+    private var resultsFinished = false
     /// 音声の時間軸と実時刻の対応（遅延の計測用）
     let timeline = AudioTimeline()
 
@@ -88,7 +90,9 @@ final class TranscriptionEngine {
         self.continuation = continuation
         self.analyzer = analyzer
 
+        resultsFinished = false
         resultsTask = Task { [weak self] in
+            defer { self?.resultsFinished = true }
             do {
                 for try await result in transcriber.results {
                     guard let self else { break }
@@ -132,6 +136,19 @@ final class TranscriptionEngine {
         guard error == nil, out.frameLength > 0 else { return }
         timeline.recordFed(seconds: Double(out.frameLength) / target.sampleRate)
         continuation.yield(AnalyzerInput(buffer: out))
+    }
+
+    /// ファイルの文字起こし用。入力を閉じ、残りの結果がすべて届くまで待ってから終了する。
+    func finishAndDrain() async {
+        continuation?.finish()
+        continuation = nil
+        try? await analyzer?.finalizeAndFinishThroughEndOfInput()
+        // 結果の列が閉じるまで待つ（上限 15 秒）
+        for _ in 0..<150 where !resultsFinished { try? await Task.sleep(for: .milliseconds(100)) }
+        resultsTask?.cancel()
+        resultsTask = nil
+        analyzer = nil
+        converter = nil
     }
 
     func stop() async {

@@ -125,6 +125,15 @@ final class CaptureSession {
     private var activeSoundSegments: [SoundLabel: UUID] = [:]
     /// 音楽だけが鳴っている間は true。翻訳を抑制する
     private var musicSuppressed = false
+    // ファイルの文字起こし
+    var isTranscribingFile = false
+    var fileProgress = 0.0
+    var fileStatus = ""
+    /// 文字起こしを終えたファイル（アプリ内の再生用に複製したもの）
+    var playbackURL: URL?
+    private var fileTask: Task<Void, Never>?
+    /// ファイルの処理中は、途中結果を使わず確定結果だけを履歴にする
+    private var fileMode = false
     private var provisionalTask: Task<Void, Never>?
     private var pauseTask: Task<Void, Never>?
     private var provisionalSource = ""
@@ -188,6 +197,12 @@ final class CaptureSession {
     }
 
     /// 表示設定を PiP の字幕へ反映する。
+    /// 現在の表示設定（アプリ内の再生で使う）
+    var currentStyle: SubtitleStyle {
+        SubtitleStyle(backgroundOpacity: CGFloat(backgroundOpacity), textColor: textColor,
+                      showOriginal: showOriginal, fontScale: CGFloat(fontScale))
+    }
+
     func applySubtitleStyle() {
         pip.apply(style: SubtitleStyle(backgroundOpacity: CGFloat(backgroundOpacity), textColor: textColor,
                                        showOriginal: showOriginal, fontScale: CGFloat(fontScale)))
@@ -207,7 +222,7 @@ final class CaptureSession {
     }
 
     func start() async {
-        guard !isRunning, !isStarting else { return }
+        guard !isRunning, !isStarting, !isTranscribingFile else { return }
         isStarting = true
         defer { isStarting = false }
         log("開始処理")
@@ -223,19 +238,7 @@ final class CaptureSession {
 
             await prepareTranslation()
 
-            engine.onLog = { [weak self] msg in Task { @MainActor in self?.log(msg) } }
-            engine.onFailure = { [weak self] error in
-                Task { @MainActor in
-                    guard let self, self.isRunning else { return }
-                    self.captureStatus = "文字起こしが停止しました"
-                    self.log("文字起こしが続行できないため停止します: \(error.localizedDescription)")
-                    await self.stop()
-                    self.captureStatus = "文字起こしが停止しました"
-                }
-            }
-            engine.onResult = { [weak self] result in
-                Task { @MainActor in self?.handleResult(result) }
-            }
+            configureEngine()
             latencyStats.reset()
             latencySummary = ""
             try await engine.start(localeIdentifier: localeIdentifier)
@@ -304,6 +307,111 @@ final class CaptureSession {
         try micSource.start()
         captureStatus = "マイクで取り込み中"
         log("マイクの取り込みを開始しました")
+    }
+
+    /// 文字起こしエンジンのコールバックを設定する（ライブ・ファイルで共通）。
+    private func configureEngine() {
+        engine.onLog = { [weak self] msg in Task { @MainActor in self?.log(msg) } }
+        engine.onFailure = { [weak self] error in
+            Task { @MainActor in
+                guard let self else { return }
+                if self.isTranscribingFile {
+                    self.log("ファイルの文字起こしが続行できないため中止します: \(error.localizedDescription)")
+                    self.fileTask?.cancel()
+                    return
+                }
+                guard self.isRunning else { return }
+                self.captureStatus = "文字起こしが停止しました"
+                self.log("文字起こしが続行できないため停止します: \(error.localizedDescription)")
+                await self.stop()
+                self.captureStatus = "文字起こしが停止しました"
+            }
+        }
+        engine.onResult = { [weak self] result in
+            Task { @MainActor in self?.handleResult(result) }
+        }
+    }
+
+    // MARK: - ファイルの文字起こし
+
+    /// ファイルの文字起こしを始める。現在の履歴は置き換える。実行中のライブ取り込みとは同時に行えない。
+    func startFileTranscription(_ url: URL) {
+        guard !isRunning, !isStarting, !isTranscribingFile else { return }
+        isTranscribingFile = true
+        fileProgress = 0
+        fileStatus = "準備中"
+        fileTask = Task { await transcribeFile(url) }
+    }
+
+    func cancelFileTranscription() {
+        fileTask?.cancel()
+    }
+
+    /// 取り込みの速度の上限（実時間の何倍で解析へ渡すか）。メモリを抑えるために間隔を空ける
+    private static let fileFeedSpeed = 15.0
+
+    private func transcribeFile(_ url: URL) async {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        defer { isTranscribingFile = false; fileTask = nil }
+        // 再生用に、アプリの一時領域へ複製する（共有元のアクセス権は処理後に手放すため）
+        HistoryExporter.removeTemporaryFiles()
+        let local = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FloatSub-source-\(UUID().uuidString).\(url.pathExtension)")
+        do {
+            try FileManager.default.copyItem(at: url, to: local)
+        } catch {
+            fileStatus = "ファイルを読み込めません: \(error.localizedDescription)"
+            log(fileStatus)
+            return
+        }
+        playbackURL = nil
+        segments.removeAll()
+        resetProvisional()
+        chunker.reset()
+        restAudioStart = nil
+        displayOriginal = ""
+        displayTranslation = ""
+        fileMode = true
+        defer { fileMode = false }
+        log("ファイルの文字起こしを開始: \(url.lastPathComponent)")
+
+        let duration = await FileAudioReader.duration(of: local)
+        await prepareTranslation()
+        configureEngine()
+        startWatchdog()
+        defer { watchdogTask?.cancel(); watchdogTask = nil }
+        do {
+            try await engine.start(localeIdentifier: localeIdentifier)
+            fileStatus = "文字起こし中"
+            var fed = 0.0
+            try await FileAudioReader.read(url: local) { buffer in
+                engine.feed(buffer)
+                let seconds = Double(buffer.frameLength) / buffer.format.sampleRate
+                fed += seconds
+                if duration > 0 { fileProgress = min(fed / duration, 1) }
+                try await Task.sleep(for: .seconds(seconds / Self.fileFeedSpeed))
+            }
+            fileStatus = "結果を確定中"
+            await engine.finishAndDrain()
+            fileProgress = 1
+        } catch is CancellationError {
+            await engine.stop()
+            fileStatus = "中止しました"
+            log("ファイルの文字起こしを中止しました")
+            playbackURL = segments.isEmpty ? nil : local
+            return
+        } catch {
+            await engine.stop()
+            fileStatus = "失敗: \(error.localizedDescription)"
+            log("ファイルの文字起こしに失敗: \(error.localizedDescription)")
+            return
+        }
+        fileStatus = "翻訳中"
+        await flushTranslations()
+        fileStatus = pendingTranslationCount == 0 ? "完了（\(segments.count) 件）" : "完了（未翻訳 \(pendingTranslationCount) 件）"
+        playbackURL = local
+        log("ファイルの文字起こしが完了しました")
     }
 
     func stop() async {
@@ -776,6 +884,7 @@ final class CaptureSession {
         // 用語の置換（文字起こし側）は、区切りの判定や翻訳より前にかける
         let text = GlossaryRules.apply(result.text.trimmingCharacters(in: .whitespacesAndNewlines),
                                        entries: glossary, target: .transcript)
+        if fileMode, !result.isFinal { return }
         if result.isFinal {
             pauseTask?.cancel()
             if let captured = result.capturedUptime {
