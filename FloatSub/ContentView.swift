@@ -1,5 +1,6 @@
 import SwiftUI
 import ReplayKit
+import Translation
 
 struct ContentView: View {
     @State private var session = CaptureSession()
@@ -28,8 +29,15 @@ struct ContentView: View {
                     ProgressView(value: min(Double(session.level) * 8, 1)) { Text("音声レベル (RMS)") }
                 }
 
-                Section("文字起こし") {
-                    ForEach(session.segments) { Text($0.text) }
+                Section("文字起こしと日本語訳") {
+                    LabeledContent("翻訳", value: session.translationStatus)
+                    ForEach(session.segments) { segment in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(segment.text).foregroundStyle(.secondary)
+                            Text(segment.translation ?? "（翻訳待ち）")
+                                .font(.headline)
+                        }
+                    }
                     if !session.volatileText.isEmpty {
                         Text(session.volatileText).foregroundStyle(.secondary)
                     }
@@ -51,6 +59,10 @@ struct ContentView: View {
                 }
             }
             .navigationTitle("FloatSub")
+            // 言語モデルが未導入のとき、システムのダウンロード確認を出すために必要
+            .translationTask(session.translationConfiguration) { translationSession in
+                await session.handleDownload(translationSession)
+            }
         }
     }
 }

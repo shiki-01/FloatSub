@@ -5,6 +5,8 @@ import Speech
 struct TranscriptSegment: Identifiable {
     let id = UUID()
     let text: String
+    /// 日本語訳。翻訳完了まで nil
+    var translation: String?
 }
 
 /// SpeechAnalyzer / SpeechTranscriber による端末内ストリーミング文字起こし。
