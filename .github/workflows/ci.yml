@@ -67,7 +67,7 @@ jobs:
           [ -d "$H" ] || exit 0
           for f in SCContentSharingPicker.h SCStream.h; do
             echo "=================== $f"
-            perl -0pe 's{/\*.*?\*/}{}gs' "$H/$f" | grep -vE '^\s*$|^\s*//|^#import|^NS_ASSUME|^NS_ASSUME_NONNULL' | sed -E 's/^(.{0,260}).*/\1/' | head -400
+            perl -0pe 's{/\*.*?\*/}{}gs' "$H/$f" | grep -vE '^\s*$|^\s*//|^#import|^NS_ASSUME|^NS_ASSUME_NONNULL' | sed -E 's/^(.{0,250}).*/\1/' | head -400
           done
       - name: XcodeGen
         run: brew install xcodegen && xcodegen generate
