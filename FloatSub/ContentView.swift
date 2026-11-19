@@ -44,7 +44,6 @@ struct ContentView: View {
             .onChange(of: session.settingsSnapshot) {
                 session.saveSettings()
                 session.applySubtitleStyle()
-                session.updateGlossary()
             }
             // 翻訳先を変えたら、翻訳できる原語だけに絞り直す
             .onChange(of: session.targetLanguageIdentifier) {
@@ -160,7 +159,7 @@ struct ContentView: View {
                 LabeledContent("用語の登録", value: "\(session.glossary.count) 件")
             }
         } footer: {
-            Text("固有名詞や専門用語を登録すると、文字起こしの精度が上がります。")
+            Text("固有名詞や専門用語の表記ゆれを、確定した文字起こしや翻訳文の中で登録した語へ置き換えます。")
         }
     }
 

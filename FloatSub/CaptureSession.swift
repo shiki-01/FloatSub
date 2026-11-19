@@ -69,9 +69,8 @@ final class CaptureSession {
     var displayIsProvisional = false
     /// マイクの権限がないとき true。ContentView が設定アプリへの案内を出す
     var microphoneDenied = false
-    /// 登録した用語。文字起こしの contextual strings に渡す
-    var glossary: [String] = []
-    private var appliedGlossary: [String] = []
+    /// 登録した用語。確定した文字起こしと翻訳文へ置換をかける
+    var glossary: [GlossaryEntry] = []
     var segments: [TranscriptSegment] = []
     var logs: [String] = []
     /// 音声から字幕までの遅延の集計（詳細欄に表示）
@@ -130,7 +129,7 @@ final class CaptureSession {
         var showLiveOriginal: Bool
         var showProvisional: Bool
         var fontScale: Double
-        var glossary: [String]
+        var glossary: [GlossaryEntry]
     }
 
     var settingsSnapshot: SettingsSnapshot {
@@ -149,7 +148,8 @@ final class CaptureSession {
         showLiveOriginal = d.bool(forKey: "showLiveOriginal")
         if d.object(forKey: "showProvisional") != nil { showProvisional = d.bool(forKey: "showProvisional") }
         if d.object(forKey: "fontScale") != nil { fontScale = d.double(forKey: "fontScale") }
-        glossary = d.stringArray(forKey: "glossary") ?? []
+        if let data = d.data(forKey: "glossaryEntries"),
+           let entries = try? JSONDecoder().decode([GlossaryEntry].self, from: data) { glossary = entries }
     }
 
     func saveSettings() {
@@ -161,15 +161,7 @@ final class CaptureSession {
         d.set(showLiveOriginal, forKey: "showLiveOriginal")
         d.set(showProvisional, forKey: "showProvisional")
         d.set(fontScale, forKey: "fontScale")
-        d.set(glossary, forKey: "glossary")
-    }
-
-    /// 実行中に用語を変えたとき、認識へ反映する。
-    func updateGlossary() {
-        guard isRunning, glossary != appliedGlossary else { return }
-        let terms = glossary
-        appliedGlossary = terms
-        Task { await engine.updateGlossary(terms) }
+        if let data = try? JSONEncoder().encode(glossary) { d.set(data, forKey: "glossaryEntries") }
     }
 
     /// 表示設定を PiP の字幕へ反映する。
@@ -222,8 +214,7 @@ final class CaptureSession {
             }
             latencyStats.reset()
             latencySummary = ""
-            appliedGlossary = glossary
-            try await engine.start(localeIdentifier: localeIdentifier, glossary: glossary)
+            try await engine.start(localeIdentifier: localeIdentifier)
             log("文字起こし準備完了 (\(localeIdentifier))")
 
             let handler = makeBufferHandler()
@@ -466,7 +457,8 @@ final class CaptureSession {
 
     /// 翻訳結果に用語の置換をかけて返す。
     private func translate(_ text: String, urgent: Bool) async throws -> String {
-        try await translator.translate(text, urgent: urgent)
+        let translated = try await translator.translate(text, urgent: urgent)
+        return GlossaryRules.apply(translated, entries: glossary, target: .translation)
     }
 
     /// 未翻訳の文節が滞留していないかを定期的に確認し、止まっていれば翻訳を再開する。
@@ -687,7 +679,9 @@ final class CaptureSession {
     }
 
     private func handleResult(_ result: TranscriptionResult) {
-        let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 用語の置換（文字起こし側）は、区切りの判定や翻訳より前にかける
+        let text = GlossaryRules.apply(result.text.trimmingCharacters(in: .whitespacesAndNewlines),
+                                       entries: glossary, target: .transcript)
         if result.isFinal {
             pauseTask?.cancel()
             if let captured = result.capturedUptime {

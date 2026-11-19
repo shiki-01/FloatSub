@@ -58,25 +58,7 @@ final class TranscriptionEngine {
     /// 指示書の supportsDevice 相当。iOS 26 の SDK では SpeechTranscriber.isAvailable が該当する。
     static var isSupported: Bool { SpeechTranscriber.isAvailable }
 
-    /// 用語を認識の手がかり（contextual strings）として analyzer に渡す。開始前・実行中のどちらでも呼べる。
-    private func applyContext(_ terms: [String], to analyzer: SpeechAnalyzer) async {
-        let context = AnalysisContext()
-        context.contextualStrings = [.general: terms]
-        do {
-            try await analyzer.setContext(context)
-            onLog?("用語を \(terms.count) 件、認識に反映しました")
-        } catch {
-            onLog?("用語の反映に失敗: \(error.localizedDescription)")
-        }
-    }
-
-    /// 実行中に用語が変わったとき。
-    func updateGlossary(_ terms: [String]) async {
-        guard let analyzer else { return }
-        await applyContext(terms, to: analyzer)
-    }
-
-    func start(localeIdentifier: String, glossary: [String] = []) async throws {
+    func start(localeIdentifier: String) async throws {
         guard Self.isSupported else { throw EngineError.unsupportedDevice }
         guard let locale = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: localeIdentifier)) else {
             throw EngineError.unsupportedLocale(localeIdentifier)
@@ -97,7 +79,6 @@ final class TranscriptionEngine {
         analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber])
         onLog?("analyzer 入力形式: \(analyzerFormat.map { "\($0.sampleRate)Hz \($0.channelCount)ch \($0.commonFormat.rawValue)" } ?? "不明")")
 
-        if !glossary.isEmpty { await applyContext(glossary, to: analyzer) }
         timeline.reset()
         let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
         self.continuation = continuation
